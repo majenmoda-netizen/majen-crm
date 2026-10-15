@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAJEN CRM</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <section id="login" class="login">
+    <form id="login-form" class="card login-card" novalidate>
+      <div class="brand brand-login">MAJEN</div>
+      <h2>Entrar</h2>
+      <label>E-mail
+        <input type="email" name="email" autocomplete="username" required>
+      </label>
+      <label>Senha
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <div class="actions">
+        <button type="submit" class="btn">Entrar</button>
+      </div>
+      <p id="login-message" class="muted small" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <div class="layout" id="app" hidden>
+    <aside class="sidebar">
+      <div class="brand">MAJEN</div>
+      <nav>
+        <a href="#painel" data-route="painel">Painel</a>
+        <a href="#viagens" data-route="viagens">Viagens</a>
+        <a href="#estoque" data-route="estoque">Estoque</a>
+        <a href="#vendas" data-route="vendas">Vendas</a>
+        <a href="#clientes" data-route="clientes">Clientes</a>
+        <a href="#financeiro" data-route="financeiro">Financeiro</a>
+      </nav>
+      <button id="logout-btn" class="logout" type="button">Sair</button>
+    </aside>
+
+    <main class="content">
+      <section class="screen" data-screen="painel">
+        <h1>Painel</h1>
+        <p class="muted">Resumo da loja neste mês.</p>
+        <div id="painel-content"></div>
+      </section>
+
+      <section class="screen" data-screen="viagens">
+        <h1>Viagens de compra</h1>
+        <p class="muted">Registre cada viagem. O custo por peça é calculado na hora.</p>
+
+        <div class="grid">
+          <form id="trip-form" class="card" novalidate>
+            <h2>Nova viagem</h2>
+
+            <label>Data
+              <input type="text" name="data" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10" required>
+            </label>
+
+            <label>Trajeto
+              <input type="text" name="trajeto" value="Sorocaba → Piedade → São Paulo → Sorocaba" readonly>
+            </label>
+
+            <div class="row">
+              <label>Km ida e volta
+                <input type="number" name="km" min="1" step="1" value="250" required>
+              </label>
+              <label>Consumo (km/L)
+                <input type="number" name="consumo" min="1" step="0.1" value="17" required>
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Combustível
+                <select name="tipoCombustivel">
+                  <option value="gasolina">Gasolina</option>
+                  <option value="etanol">Etanol</option>
+                </select>
+              </label>
+              <label>Preço por litro (R$)
+                <input type="number" name="preco" min="0.01" step="0.01" placeholder="Ex.: 6,00" required>
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Pedágio (R$)
+                <input type="number" name="pedagio" min="0" step="0.01" value="40" required>
+              </label>
+              <label>Peças compradas
+                <input type="number" name="pecas" min="1" step="1" placeholder="Ex.: 100" required>
+              </label>
+            </div>
+
+            <label>Observações
+              <input type="text" name="obs" placeholder="Opcional">
+            </label>
+
+            <div class="preview" id="trip-preview" aria-live="polite">
+              <p class="muted">Preencha o preço do combustível e a quantidade de peças para ver o cálculo.</p>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="btn">Salvar viagem</button>
+              <span id="trip-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div class="card">
+            <h2>Histórico</h2>
+            <div id="trip-list" class="table-wrap">
+              <p class="muted">Nenhuma viagem registrada ainda.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="estoque">
+        <h1>Estoque</h1>
+        <p class="muted">Cadastre cada peça com foto e quantidade. O custo vem da viagem escolhida.</p>
+
+        <div class="grid">
+          <form id="stock-form" class="card" novalidate>
+            <h2>Nova peça</h2>
+
+            <label>Foto
+              <input type="file" name="foto" accept="image/*" capture="environment">
+            </label>
+            <div id="stock-photo-preview" class="photo-preview"></div>
+
+            <label>Nome
+              <input type="text" name="nome" placeholder="Ex.: Vestido floral midi" required>
+            </label>
+
+            <div class="row">
+              <label>Categoria
+                <select name="categoria">
+                  <option value="vestido">Vestido</option>
+                  <option value="camiseta">Camiseta</option>
+                  <option value="perfume">Perfume</option>
+                  <option value="outros">Outros</option>
+                </select>
+              </label>
+              <label>Tamanho
+                <input type="text" name="tamanho" placeholder="P, M, G ou 100 ml">
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Cor
+                <input type="text" name="cor" placeholder="Ex.: rosé">
+              </label>
+              <label>Quantidade
+                <input type="number" name="quantidade" min="1" step="1" value="1" required>
+              </label>
+            </div>
+
+            <label>Viagem de origem
+              <select name="viagem" id="stock-trip"></select>
+            </label>
+
+            <label>Custo do produto (R$)
+              <input type="number" name="custoProduto" min="0" step="0.01" placeholder="Ex.: 5,00" required>
+            </label>
+
+            <div class="preview" id="stock-preview" aria-live="polite">
+              <p class="muted">Informe o custo do produto para ver o preço sugerido.</p>
+            </div>
+
+            <label>Preço de venda (R$)
+              <input type="number" name="precoVenda" min="0" step="0.01" placeholder="Ex.: 13,00">
+            </label>
+
+            <div class="actions">
+              <button type="submit" class="btn">Salvar peça</button>
+              <span id="stock-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div class="card">
+            <h2>Peças em estoque</h2>
+            <div id="stock-list" class="table-wrap">
+              <p class="muted">Nenhuma peça cadastrada ainda.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="clientes">
+        <h1>Clientes</h1>
+        <p class="muted">Cadastro com WhatsApp como chave, consentimento, aniversário e total gasto.</p>
+
+        <div class="grid">
+          <form id="client-form" class="card" novalidate>
+            <h2>Novo cliente</h2>
+
+            <label>Nome
+              <input type="text" name="nome" required>
+            </label>
+
+            <div class="row">
+              <label>WhatsApp
+                <input type="tel" name="whatsapp" placeholder="(15) 99999-9999" required>
+              </label>
+              <label>Aniversário
+                <input type="text" name="aniversario" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10">
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Como conheceu
+                <select name="origem">
+                  <option value="">Selecione</option>
+                  <option value="instagram">Instagram</option>
+                  <option value="indicacao">Indicação</option>
+                  <option value="passou-na-frente">Passou na frente</option>
+                  <option value="outro">Outro</option>
+                </select>
+              </label>
+              <label>Indicada por
+                <input type="text" name="indicadaPor" placeholder="Opcional">
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Tamanho habitual
+                <input type="text" name="tamanho" placeholder="Ex.: M">
+              </label>
+              <label>Perfume favorito
+                <input type="text" name="perfume" placeholder="Ex.: floral">
+              </label>
+            </div>
+
+            <label>Estilo preferido
+              <input type="text" name="estilo" placeholder="Ex.: romântico, básico, festa">
+            </label>
+
+            <fieldset class="consent">
+              <legend>Consentimento</legend>
+              <label class="check"><input type="checkbox" name="consentWhats"> Aceita receber mensagens no WhatsApp</label>
+              <label class="check"><input type="checkbox" name="consentPromo"> Aceita receber promoções</label>
+            </fieldset>
+
+            <label>Observações
+              <input type="text" name="obs">
+            </label>
+
+            <div class="actions">
+              <button type="submit" class="btn">Salvar cliente</button>
+              <span id="client-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div>
+            <div class="card">
+              <h2>Clientes</h2>
+              <input type="search" id="client-search" placeholder="Buscar por nome ou WhatsApp">
+              <div id="client-birthdays" class="birthdays"></div>
+              <div id="client-list" class="table-wrap">
+                <p class="muted">Nenhum cliente cadastrado ainda.</p>
+              </div>
+            </div>
+
+            <div id="client-detail" class="card detail" hidden></div>
+          </div>
+        </div>
+      </section>
+      <section class="screen" data-screen="vendas">
+        <h1>Vendas</h1>
+        <p class="muted">Registre a venda: as peças saem do estoque e o valor entra no caixa.</p>
+
+        <div class="grid">
+          <form id="sale-form" class="card" novalidate>
+            <h2>Nova venda</h2>
+
+            <div class="row">
+              <label>Data
+                <input type="text" name="data" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10" required>
+              </label>
+              <label>Forma de pagamento
+                <select name="forma"></select>
+              </label>
+            </div>
+
+            <label>Cliente
+              <select name="cliente"></select>
+            </label>
+
+            <div class="sale-head small muted">
+              <span>Peça</span><span>Qtd</span><span>Preço (R$)</span><span></span>
+            </div>
+            <div id="sale-items"></div>
+            <button type="button" id="sale-add-item" class="link-btn">+ Adicionar peça</button>
+
+            <label>Observações
+              <input type="text" name="obs">
+            </label>
+
+            <div class="sale-total">
+              <span>Total da venda</span>
+              <strong id="sale-total">R$ 0,00</strong>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="btn">Registrar venda</button>
+              <span id="sale-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div class="card">
+            <h2>Vendas registradas</h2>
+            <div id="sale-list" class="table-wrap">
+              <p class="muted">Nenhuma venda registrada ainda.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="financeiro">
+        <div class="header-row">
+          <div>
+            <h1>Financeiro</h1>
+            <p class="muted">Entradas, saídas e caixa da loja.</p>
+          </div>
+          <label class="month-pick">Mês
+            <input type="month" id="finance-month">
+          </label>
+        </div>
+
+        <div class="kpis">
+          <div class="card kpi"><span class="muted small">Saldo em caixa (total)</span><strong id="kpi-saldo">—</strong></div>
+          <div class="card kpi"><span class="muted small">Entradas do mês</span><strong id="kpi-entradas">—</strong></div>
+          <div class="card kpi"><span class="muted small">Saídas do mês</span><strong id="kpi-saidas">—</strong></div>
+          <div class="card kpi"><span class="muted small">Resultado do mês</span><strong id="kpi-resultado">—</strong></div>
+        </div>
+
+        <div class="grid">
+          <form id="finance-form" class="card" novalidate>
+            <h2>Novo lançamento</h2>
+
+            <div class="row">
+              <label>Tipo
+                <select name="tipo">
+                  <option value="saida">Saída</option>
+                  <option value="entrada">Entrada</option>
+                </select>
+              </label>
+              <label>Data
+                <input type="text" name="data" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10" required>
+              </label>
+            </div>
+
+            <label>Categoria
+              <select name="categoria"></select>
+            </label>
+
+            <label>Descrição
+              <input type="text" name="descricao" placeholder="Ex.: compra de 50 camisetas">
+            </label>
+
+            <div class="row">
+              <label>Valor (R$)
+                <input type="number" name="valor" min="0.01" step="0.01" placeholder="Ex.: 250,00" required>
+              </label>
+              <label>Forma de pagamento
+                <select name="forma"></select>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="btn">Salvar lançamento</button>
+              <span id="finance-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div class="card">
+            <h2>Comparativo (últimos 6 meses)</h2>
+            <div id="finance-chart" class="chart"></div>
+            <p class="legend small muted"><span class="dot in"></span> Entradas <span class="dot out"></span> Saídas</p>
+            <div id="finance-compare" class="table-wrap"></div>
+          </div>
+        </div>
+
+        <div class="card list-card">
+          <h2>Lançamentos do mês</h2>
+          <div id="finance-list" class="table-wrap">
+            <p class="muted">Nenhum lançamento neste mês.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js?v=9"></script>
+</body>
+</html>
