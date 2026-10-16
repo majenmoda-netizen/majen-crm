@@ -54,6 +54,9 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// Forma de pagamento com as parcelas, quando houver (ex.: "Cartão de crédito (3x)").
+const formaVenda = (v) => (v.parcelas > 1 ? `${v.forma} (${v.parcelas}x)` : v.forma);
+
 // Cálculo da viagem: litros = km ÷ consumo; combustível = litros × preço;
 // custo por peça = (combustível + pedágio) ÷ peças.
 function calculateTrip({ km, consumo, preco, pedagio, pecas }) {
@@ -140,6 +143,7 @@ const stockFromRow = (r) => ({
   tamanho: r.tamanho || "",
   cor: r.cor || "",
   codigo: r.codigo || "",
+  fornecedor: r.fornecedor || "",
   quantidade: num(r.quantidade),
   viagemId: r.viagem_id,
   custoProduto: num(r.custo_produto),
@@ -183,6 +187,7 @@ const vendaFromRow = (r) => ({
   clienteId: r.cliente_id,
   forma: r.forma_pagamento || "",
   total: num(r.total),
+  parcelas: num(r.parcelas || 1),
   estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
@@ -394,11 +399,18 @@ function initStock() {
     }
   }
 
+  // Sugere os fornecedores já usados, para não digitar o mesmo nome de formas diferentes.
+  function fillSuppliers() {
+    const nomes = [...new Set(cache.estoque.map((p) => p.fornecedor).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    document.getElementById("stock-suppliers").innerHTML = nomes.map((n) => `<option value="${escapeHtml(n)}"></option>`).join("");
+  }
+
   function renderList() {
     fillTrips();
+    fillSuppliers();
     const term = search.value.trim().toLowerCase();
     const items = cache.estoque.filter(
-      (p) => !term || [p.codigo, p.nome, p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
+      (p) => !term || [p.codigo, p.nome, p.fornecedor, p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
     );
     if (items.length === 0) {
       list.innerHTML = `<p class="muted">${term ? "Nenhuma peça encontrada." : "Nenhuma peça cadastrada ainda."}</p>`;
@@ -410,6 +422,7 @@ function initStock() {
           <td>${item.foto ? `<img class="thumb" src="${item.foto}" alt="">` : "—"}</td>
           <td>${escapeHtml(item.codigo || "—")}</td>
           <td>${escapeHtml(item.nome)}</td>
+          <td>${escapeHtml(item.fornecedor || "—")}</td>
           <td>${item.categoria}</td>
           <td>${escapeHtml(item.tamanho || "—")}</td>
           <td>${escapeHtml(item.cor || "—")}</td>
@@ -426,7 +439,7 @@ function initStock() {
     list.innerHTML = `
       <table>
         <thead>
-          <tr><th>Foto</th><th>Código</th><th>Nome</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th></th></tr>
+          <tr><th>Foto</th><th>Código</th><th>Nome</th><th>Fornecedor</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -462,6 +475,7 @@ function initStock() {
     const precoVenda = num(form.elements.precoVenda.value) || suggestPrice(c.total);
     const { error } = await db.from("estoque").insert({
       codigo: form.elements.codigo.value.trim() || null,
+      fornecedor: form.elements.fornecedor.value.trim() || null,
       nome,
       categoria: form.elements.categoria.value,
       tamanho: form.elements.tamanho.value.trim() || null,
@@ -728,6 +742,20 @@ function initVendas() {
   const message = document.getElementById("sale-message");
   const list = document.getElementById("sale-list");
   const clienteSelect = form.elements.cliente;
+  const parcelasLabel = document.getElementById("sale-parcelas-label");
+  const parcelasSelect = form.elements.parcelas;
+  const isCredit = () => form.elements.forma.value === "Cartão de crédito";
+
+  // Opções de 1x a 12x, já mostrando o valor de cada parcela. Só aparece no cartão de crédito.
+  function renderParcelas(total) {
+    parcelasLabel.hidden = !isCredit();
+    const current = parcelasSelect.value || "1";
+    parcelasSelect.innerHTML = Array.from({ length: 12 }, (_, i) => {
+      const n = i + 1;
+      return `<option value="${n}">${n}x${total > 0 ? ` de ${moneyText(total / n)}` : ""}</option>`;
+    }).join("");
+    parcelasSelect.value = current;
+  }
 
   form.elements.data.value = todayBR();
   maskDateBR(form.elements.data);
@@ -763,6 +791,7 @@ function initVendas() {
   function renderTotal() {
     const total = readItems().reduce((sum, i) => sum + i.quantidade * i.preco, 0);
     totalEl.textContent = brl.format(total);
+    renderParcelas(total);
   }
 
   function renderVendas() {
@@ -796,7 +825,7 @@ function initVendas() {
           <tr class="${v.estornada ? "undone" : ""}">
             <td>${formatDate(v.data)}</td>
             <td>${cliente ? escapeHtml(cliente.nome) : "—"}</td>
-            <td>${escapeHtml(v.forma || "—")}</td>
+            <td>${escapeHtml(formaVenda(v) || "—")}</td>
             <td>${pecas} peça(s)</td>
             <td><strong>${brl.format(v.total)}</strong></td>
             <td>${action}</td>
@@ -838,6 +867,7 @@ function initVendas() {
   });
 
   itemsBox.addEventListener("input", renderTotal);
+  form.elements.forma.addEventListener("change", renderTotal);
 
   itemsBox.addEventListener("click", (event) => {
     if (event.target.dataset.field !== "remover") return;
@@ -869,6 +899,7 @@ function initVendas() {
       p_forma: form.elements.forma.value,
       p_obs: form.elements.obs.value.trim(),
       p_itens: itens,
+      p_parcelas: isCredit() ? Number(parcelasSelect.value) : 1,
     });
     if (error) {
       message.textContent = `Não foi possível registrar a venda. ${error.message}`;
@@ -876,6 +907,7 @@ function initVendas() {
     }
     message.textContent = "Venda registrada.";
     form.elements.obs.value = "";
+    parcelasSelect.value = "1";
     itemsBox.innerHTML = "";
     await refreshAll();
   });
@@ -1091,7 +1123,7 @@ const EXPORTS = {
       cache.vendas.map((v) => {
         const cliente = cache.clientes.find((c) => c.id === v.clienteId);
         return [
-          formatDate(v.data), cliente ? cliente.nome : "", v.forma,
+          formatDate(v.data), cliente ? cliente.nome : "", formaVenda(v),
           v.itens.reduce((sum, i) => sum + i.quantidade, 0), csvNumber(v.total), v.estornada ? "Desfeita" : "Ativa",
         ];
       })
@@ -1107,9 +1139,9 @@ const EXPORTS = {
   estoque: () =>
     downloadCsv(
       "estoque",
-      ["Código", "Nome", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
+      ["Código", "Nome", "Fornecedor", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
       cache.estoque.map((p) => [
-        p.codigo, p.nome, p.categoria, p.tamanho, p.cor, p.quantidade,
+        p.codigo, p.nome, p.fornecedor, p.categoria, p.tamanho, p.cor, p.quantidade,
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
       ])
     ),
@@ -1158,7 +1190,7 @@ function buildReport(from, to) {
         preco: i.preco,
         custo: i.custo,
         subtotal: i.quantidade * i.preco,
-        pagamento: v.forma,
+        pagamento: formaVenda(v),
         status: v.estornada ? "Desfeita" : "Ativa",
       });
     });
@@ -1273,7 +1305,7 @@ function exportExcel(r) {
     "Vendas",
     [["Data", "Cliente", "Pagamento", "Peças", "Total", "Status"]].concat(
       r.vendas.map((v) => [
-        formatDate(v.data), r.nomeCliente(v.clienteId), v.forma,
+        formatDate(v.data), r.nomeCliente(v.clienteId), formaVenda(v),
         v.itens.reduce((sum, i) => sum + i.quantidade, 0), v.total, v.estornada ? "Desfeita" : "Ativa",
       ])
     ),
@@ -1381,7 +1413,7 @@ function exportPdf(r) {
     "Vendas",
     ["Data", "Cliente", "Pagamento", "Peças", "Total", "Status"],
     r.vendas.map((v) => [
-      formatDate(v.data), r.nomeCliente(v.clienteId), v.forma || "—",
+      formatDate(v.data), r.nomeCliente(v.clienteId), formaVenda(v) || "—",
       String(v.itens.reduce((sum, i) => sum + i.quantidade, 0)), moneyText(v.total), v.estornada ? "Desfeita" : "Ativa",
     ]),
     { 3: { halign: "right" }, 4: { halign: "right" } }

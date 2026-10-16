@@ -128,9 +128,15 @@
             </label>
             <div id="stock-photo-preview" class="photo-preview"></div>
 
-            <label>Código
-              <input type="text" name="codigo" placeholder="Ex.: código do catálogo do fornecedor">
-            </label>
+            <div class="row">
+              <label>Código
+                <input type="text" name="codigo" placeholder="Ex.: código do catálogo">
+              </label>
+              <label>Fornecedor
+                <input type="text" name="fornecedor" list="stock-suppliers" placeholder="Ex.: Natura">
+              </label>
+            </div>
+            <datalist id="stock-suppliers"></datalist>
 
             <label>Nome
               <input type="text" name="nome" placeholder="Ex.: Vestido floral midi" required>
@@ -183,7 +189,7 @@
 
           <div class="card">
             <h2>Peças em estoque</h2>
-            <input type="search" id="stock-search" placeholder="Buscar por código, nome ou cor">
+            <input type="search" id="stock-search" placeholder="Buscar por código, nome, fornecedor ou cor">
             <div id="stock-list" class="table-wrap">
               <p class="muted">Nenhuma peça cadastrada ainda.</p>
             </div>
@@ -286,6 +292,10 @@
                 <select name="forma"></select>
               </label>
             </div>
+
+            <label id="sale-parcelas-label" hidden>Parcelas no cartão
+              <select name="parcelas"></select>
+            </label>
 
             <label>Cliente
               <select name="cliente"></select>
@@ -434,6 +444,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>
