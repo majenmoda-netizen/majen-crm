@@ -1,5 +1,5 @@
 // Navegação simples entre as telas, usando o hash da URL (#viagens, #estoque...).
-const ROUTES = ["painel", "viagens", "estoque", "vendas", "clientes", "financeiro"];
+const ROUTES = ["painel", "viagens", "estoque", "vendas", "clientes", "financeiro", "relatorios"];
 
 function showRoute() {
   const hash = window.location.hash.replace("#", "");
@@ -1039,6 +1039,83 @@ function initFinance() {
   renderers.push(renderFinance);
 }
 
+// ---------- Exportar (backup em planilha) ----------
+
+// Número no formato brasileiro (vírgula decimal), para abrir certo no Excel.
+const csvNumber = (value) => String(Number(value)).replace(".", ",");
+
+// Células de texto que começariam com = + - @ ganham um apóstrofo, para o Excel não tratá-las como fórmula.
+function csvCell(value) {
+  const text = String(value ?? "");
+  const looksLikeNumber = /^-?\d+([.,]\d+)?$/.test(text);
+  const safe = /^[=+\-@]/.test(text) && !looksLikeNumber ? `'${text}` : text;
+  return /[";\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
+function downloadCsv(name, headers, rows) {
+  const lines = [headers, ...rows].map((row) => row.map(csvCell).join(";"));
+  const blob = new Blob([`﻿${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `majen-${name}-${todayISO()}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+const EXPORTS = {
+  clientes: () =>
+    downloadCsv(
+      "clientes",
+      ["Nome", "WhatsApp", "Aniversário", "Origem", "Indicada por", "Tamanho", "Perfume", "Estilo", "Aceita WhatsApp", "Aceita promoções", "Compras", "Total gasto", "Última compra", "Observações"],
+      cache.clientes.map((c) => [
+        c.nome, c.whatsapp, formatDate(c.aniversario), c.origem, c.indicadaPor, c.tamanho, c.perfume, c.estilo,
+        c.consentWhats ? "Sim" : "Não", c.consentPromo ? "Sim" : "Não",
+        c.compras.length, csvNumber(totalSpent(c)), formatDate(lastPurchase(c)), c.obs,
+      ])
+    ),
+  vendas: () =>
+    downloadCsv(
+      "vendas",
+      ["Data", "Cliente", "Pagamento", "Peças", "Total", "Status"],
+      cache.vendas.map((v) => {
+        const cliente = cache.clientes.find((c) => c.id === v.clienteId);
+        return [
+          formatDate(v.data), cliente ? cliente.nome : "", v.forma,
+          v.itens.reduce((sum, i) => sum + i.quantidade, 0), csvNumber(v.total), v.estornada ? "Desfeita" : "Ativa",
+        ];
+      })
+    ),
+  financeiro: () =>
+    downloadCsv(
+      "financeiro",
+      ["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor"],
+      cache.lancamentos.map((l) => [
+        formatDate(l.data), l.tipo === "entrada" ? "Entrada" : "Saída", l.categoria, l.descricao, l.forma, csvNumber(l.valor),
+      ])
+    ),
+  estoque: () =>
+    downloadCsv(
+      "estoque",
+      ["Nome", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
+      cache.estoque.map((p) => [
+        p.nome, p.categoria, p.tamanho, p.cor, p.quantidade,
+        csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
+      ])
+    ),
+  viagens: () =>
+    downloadCsv(
+      "viagens",
+      ["Data", "Km", "Consumo (km/L)", "Combustível", "Preço por litro", "Pedágio", "Peças", "Custo da viagem", "Custo por peça"],
+      cache.viagens.map((t) => [
+        formatDate(t.data), t.km, csvNumber(t.consumo), t.tipoCombustivel, csvNumber(t.preco),
+        csvNumber(t.pedagio), t.pecas, csvNumber(t.total), csvNumber(t.porPeca),
+      ])
+    ),
+};
+
 // ---------- Painel ----------
 
 const LOW_STOCK_LIMIT = 2;
@@ -1046,6 +1123,11 @@ const LOW_STOCK_LIMIT = 2;
 function initPainel() {
   const root = document.getElementById("painel-content");
   if (!root) return;
+
+  root.addEventListener("click", (event) => {
+    const kind = event.target.dataset.export;
+    if (kind && EXPORTS[kind]) EXPORTS[kind]();
+  });
 
   // Dias até o próximo aniversário (0 = hoje), ou null se não há data.
   function daysUntilBirthday(iso) {
@@ -1116,6 +1198,17 @@ function initPainel() {
         ${listCard("Aniversariantes (próximos 7 dias)", aniversarios, "Nenhum aniversário nos próximos dias.")}
         ${listCard("Últimas vendas", ultimas, "Nenhuma venda registrada ainda.")}
         ${listCard("Melhores clientes", melhores, "Ainda não há compras de clientes.")}
+      </div>
+      <div class="card export-card">
+        <h2>Exportar dados</h2>
+        <p class="muted small">Baixe uma cópia em planilha (abre no Excel). Vale fazer de vez em quando, como backup.</p>
+        <div class="export-buttons">
+          <button type="button" class="btn secondary" data-export="clientes">Clientes</button>
+          <button type="button" class="btn secondary" data-export="vendas">Vendas</button>
+          <button type="button" class="btn secondary" data-export="financeiro">Financeiro</button>
+          <button type="button" class="btn secondary" data-export="estoque">Estoque</button>
+          <button type="button" class="btn secondary" data-export="viagens">Viagens</button>
+        </div>
       </div>`;
   }
 

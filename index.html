@@ -34,6 +34,7 @@
         <a href="#vendas" data-route="vendas">Vendas</a>
         <a href="#clientes" data-route="clientes">Clientes</a>
         <a href="#financeiro" data-route="financeiro">Financeiro</a>
+        <a href="#relatorios" data-route="relatorios">Relatórios</a>
       </nav>
       <button id="logout-btn" class="logout" type="button">Sair</button>
     </aside>
@@ -387,11 +388,47 @@
           </div>
         </div>
       </section>
+      <section class="screen" data-screen="relatorios">
+        <h1>Relatórios</h1>
+        <p class="muted">Resumo de vendas e financeiro, com quem comprou o quê, quantidades e valores. Baixe em Excel ou PDF.</p>
+
+        <div class="card">
+          <h2>Período</h2>
+          <div class="period-row">
+            <label>De
+              <input type="text" id="report-from" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10">
+            </label>
+            <label>Até
+              <input type="text" id="report-to" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10">
+            </label>
+            <div class="presets">
+              <button type="button" class="link-btn" data-preset="mes">Este mês</button>
+              <button type="button" class="link-btn" data-preset="mes-passado">Mês passado</button>
+              <button type="button" class="link-btn" data-preset="tudo">Todo o período</button>
+            </div>
+          </div>
+          <p id="report-message" class="muted small" aria-live="polite"></p>
+        </div>
+
+        <div id="report-preview"></div>
+
+        <div class="card">
+          <h2>Baixar relatório</h2>
+          <p class="muted small">O Excel traz abas de resumo, vendas, compras por cliente, clientes e financeiro. O PDF traz o mesmo conteúdo para imprimir ou enviar.</p>
+          <div class="export-buttons">
+            <button type="button" class="btn" id="report-xlsx">Baixar Excel (.xlsx)</button>
+            <button type="button" class="btn secondary" id="report-pdf">Baixar PDF</button>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

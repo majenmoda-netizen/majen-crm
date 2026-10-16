@@ -410,6 +410,28 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 
 .list-card { margin-top: 24px; }
 
+.period-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.period-row label { min-width: 150px; margin-bottom: 0; }
+.period-row .presets { display: flex; gap: 14px; padding-bottom: 10px; }
+
+#report-preview { margin: 16px 0; }
+#report-preview .panel-grid { margin-top: 16px; }
+.report-card { margin-bottom: 16px; }
+
+.export-card { margin-top: 16px; }
+.export-card .export-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.btn.secondary {
+  background: var(--blush);
+  color: var(--rose-dark);
+}
+
 .undone td { color: var(--muted); text-decoration: line-through; }
 .undone td:last-child { text-decoration: none; }
 
