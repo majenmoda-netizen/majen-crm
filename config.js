@@ -6,7 +6,8 @@ window.MAJEN_CONFIG = {
   // Textos do recibo. Deixe vazio o que não quiser mostrar.
   recibo: {
     contato: "", // ex.: "Instagram @sualoja · WhatsApp (15) 99999-9999"
-    observacao: "", // ex.: "Troca em até 7 dias, com etiqueta e na embalagem original."
+    observacao: "Troca em até 7 dias, com etiqueta.",
+    frase: "Seu estilo, sua essência.",
   },
   supabaseAnonKey: "sb_publishable_XDDLBgxB1N8RhOUIZsR5OA_U-feuYMw",
 };

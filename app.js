@@ -1714,10 +1714,17 @@ function buildReceipt(v) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(...MUTED);
-  if (loja.contato) doc.text(loja.contato, W / 2, footer + 34, { align: "center" });
+  if (loja.frase) {
+    doc.setFont("times", "italic");
+    doc.setFontSize(9.5);
+    doc.text(loja.frase, W / 2, footer + 34, { align: "center" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+  }
+  if (loja.contato) doc.text(loja.contato, W / 2, footer + 47, { align: "center" });
   doc.setFontSize(7);
   doc.setTextColor(168, 154, 162);
-  doc.text("Este recibo não substitui nota fiscal.", W / 2, footer + 48, { align: "center" });
+  doc.text("Este recibo não substitui nota fiscal.", W / 2, footer + 61, { align: "center" });
   return doc;
 }
 
