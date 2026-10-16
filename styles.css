@@ -320,6 +320,7 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 }
 
 .detail-head h2 { margin: 0; }
+.detail-head .link-btn + .link-btn { margin-left: 14px; }
 
 .purchase { align-items: end; }
 .purchase .actions { grid-column: 1 / -1; }

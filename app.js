@@ -950,6 +950,7 @@ function initFornecedores() {
         <h2>${escapeHtml(f.nome)}</h2>
         <span>
           <button class="link-btn" data-edit="${f.id}" type="button">Editar</button>
+          <button class="link-btn" data-delete="${f.id}" type="button">Excluir</button>
           <button class="link-btn" data-close="1" type="button">Fechar</button>
         </span>
       </div>
@@ -1041,6 +1042,38 @@ function initFornecedores() {
       setEditing(event.target.dataset.edit);
       form.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
+  });
+
+  // Excluir: as peças continuam no estoque (só perdem o fornecedor) e o fornecedor sai das viagens.
+  detail.addEventListener("click", async (event) => {
+    const id = event.target.dataset.delete;
+    if (!id) return;
+    const f = cache.fornecedores.find((x) => x.id === id);
+    if (!f) return;
+    const s = supplierStats(f);
+    const aviso = [
+      `Excluir o fornecedor ${f.nome}?`,
+      s.pecas.length ? `${s.pecas.length} peça(s) do estoque ficarão sem fornecedor.` : "",
+      s.viagens.length ? `Ele sai de ${s.viagens.length} viagem(ns) registrada(s).` : "",
+      "Isso não pode ser desfeito.",
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(aviso)) return;
+
+    // Limpa também o nome antigo digitado em texto, para a peça não continuar mostrando o fornecedor excluído.
+    const limpar = await db.from("estoque").update({ fornecedor: null }).eq("fornecedor_id", id);
+    if (limpar.error) {
+      message.textContent = friendlyError(limpar.error);
+      return;
+    }
+    const { error } = await db.from("fornecedores").delete().eq("id", id);
+    if (error) {
+      message.textContent = friendlyError(error);
+      return;
+    }
+    if (editingId === id) setEditing(null);
+    selectedId = null;
+    message.textContent = `Fornecedor ${f.nome} excluído.`;
+    await refreshAll();
   });
 
   renderers.push(renderList);
