@@ -383,6 +383,18 @@
               <select name="parcelas"></select>
             </label>
 
+            <div id="sale-fee-box" class="row" hidden>
+              <label>Taxa da maquininha (%)
+                <input type="number" name="taxa" min="0" max="49.9" step="0.01" placeholder="Ex.: 3,5">
+              </label>
+              <label>Quem paga a taxa
+                <select name="taxaPaga">
+                  <option value="cliente">Cliente (soma ao valor)</option>
+                  <option value="loja">Loja (sai do meu lucro)</option>
+                </select>
+              </label>
+            </div>
+
             <label>Cliente
               <select name="cliente"></select>
             </label>
@@ -402,7 +414,7 @@
             </label>
 
             <div class="sale-total">
-              <span>Total da venda</span>
+              <span id="sale-total-label">Total da venda</span>
               <strong id="sale-total">R$ 0,00</strong>
             </div>
             <div id="sale-breakdown" class="sale-breakdown" aria-live="polite"></div>
@@ -537,6 +549,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>

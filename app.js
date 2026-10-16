@@ -55,7 +55,12 @@ function escapeHtml(value) {
 }
 
 // Forma de pagamento com as parcelas, quando houver (ex.: "Cartão de crédito (3x)").
-const formaVenda = (v) => (v.parcelas > 1 ? `${v.forma} (${v.parcelas}x)` : v.forma);
+const formaVenda = (v) => {
+  const partes = [];
+  if (v.parcelas > 1) partes.push(`${v.parcelas}x`);
+  if (v.taxa > 0) partes.push(`taxa ${pct(v.taxa)}`);
+  return partes.length ? `${v.forma} (${partes.join(", ")})` : v.forma;
+};
 
 // Nome do fornecedor pelo id; peças antigas podem ter só o nome digitado em texto.
 const fornecedorNome = (id) => {
@@ -218,6 +223,11 @@ const vendaFromRow = (r) => ({
   parcelas: num(r.parcelas || 1),
   desconto: num(r.desconto_percentual || 0),
   subtotal: num(r.subtotal || r.total),
+  taxa: num(r.taxa_maquininha_percentual || 0),
+  taxaPagaPor: r.taxa_paga_por || "cliente",
+  valorTaxa: num(r.valor_taxa || 0),
+  totalCobrado: num(r.total_cobrado || r.total),
+  numero: r.numero ?? null,
   estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
@@ -301,6 +311,7 @@ function profitSummary(inRange = () => true) {
   const comprasPecas = soma("compra_pecas", "saida") - soma("estorno_compra", "entrada");
   const transporte = soma("viagem", "saida") - soma("estorno_viagem", "entrada");
   const despesas = soma("manual", "saida");
+  const taxas = soma("taxa_maquininha", "saida") - soma("estorno_taxa", "entrada");
   const lucroBruto = faturamento - custoVendido;
   return {
     vendas: ativas.length,
@@ -313,7 +324,8 @@ function profitSummary(inRange = () => true) {
     comprasPecas,
     transporte,
     despesas,
-    lucroLiquido: lucroBruto - despesas,
+    taxas,
+    lucroLiquido: lucroBruto - despesas - taxas,
     entradas: sumByTipo(lanc, "entrada"),
     saidas: sumByTipo(lanc, "saida"),
   };
@@ -334,7 +346,8 @@ function profitBlockHtml(s, title = "Custos e lucro") {
         ${kpiCard("Custo das peças vendidas", moneyText(s.custoVendido), { sub: "produto + transporte da viagem", tone: "cost" })}
         ${kpiCard("Lucro bruto", moneyText(s.lucroBruto), { sub: `${pct(s.margem)} da venda · ${pct(s.markup)} sobre o custo`, tone: "profit", negative: s.lucroBruto < 0 })}
         ${kpiCard("Despesas lançadas", moneyText(s.despesas), { sub: "energia, cápsulas, aluguel...", tone: "cost" })}
-        ${kpiCard("Lucro líquido", moneyText(s.lucroLiquido), { sub: "lucro bruto − despesas", tone: "profit", negative: s.lucroLiquido < 0 })}
+        ${kpiCard("Taxas da maquininha", moneyText(s.taxas), { sub: "as que a loja pagou nas vendas no cartão", tone: "cost" })}
+        ${kpiCard("Lucro líquido", moneyText(s.lucroLiquido), { sub: "lucro bruto − despesas − taxas", tone: "profit", negative: s.lucroLiquido < 0 })}
       </div>
       <div class="kpis">
         ${kpiCard("Compras de peças (caixa)", moneyText(s.comprasPecas), { sub: "o que saiu para comprar estoque", tone: "cost" })}
@@ -1515,6 +1528,8 @@ function initVendas() {
   const list = document.getElementById("sale-list");
   const clienteSelect = form.elements.cliente;
   const breakdown = document.getElementById("sale-breakdown");
+  const feeBox = document.getElementById("sale-fee-box");
+  const totalLabel = document.getElementById("sale-total-label");
   const parcelasLabel = document.getElementById("sale-parcelas-label");
   const parcelasSelect = form.elements.parcelas;
   const isCredit = () => form.elements.forma.value === "Cartão de crédito";
@@ -1522,6 +1537,7 @@ function initVendas() {
   // Opções de 1x a 12x, já mostrando o valor de cada parcela. Só aparece no cartão de crédito.
   function renderParcelas(total) {
     parcelasLabel.hidden = !isCredit();
+    feeBox.hidden = !isCredit();
     const current = parcelasSelect.value || "1";
     parcelasSelect.innerHTML = Array.from({ length: 12 }, (_, i) => {
       const n = i + 1;
@@ -1570,8 +1586,17 @@ function initVendas() {
   // Mesma regra do banco: o desconto reduz o preço de cada peça (arredondado em centavos).
   const finalPrice = (preco, d) => round2(preco * (1 - d / 100));
 
+  // Taxa da maquininha em %, só no cartão de crédito (0 nas outras formas de pagamento).
+  const feePct = () => {
+    if (!isCredit()) return 0;
+    const t = num(form.elements.taxa.value || 0);
+    return Number.isFinite(t) ? Math.min(Math.max(t, 0), 49.9) : 0;
+  };
+
   function renderTotal() {
     const d = discountPct();
+    const taxa = feePct();
+    const quem = form.elements.taxaPaga.value;
     const itens = readItems();
     const subtotal = itens.reduce((sum, i) => sum + i.quantidade * i.preco, 0);
     const total = itens.reduce((sum, i) => sum + i.quantidade * finalPrice(i.preco, d), 0);
@@ -1579,17 +1604,25 @@ function initVendas() {
       const p = cache.estoque.find((x) => x.id === i.estoque_id);
       return sum + i.quantidade * (p ? p.custoTotal : 0);
     }, 0);
-    totalEl.textContent = brl.format(total);
-    renderParcelas(total);
+    const valorTaxa = round2((total * taxa) / 100);
+    const cobrado = quem === "cliente" ? total + valorTaxa : total;
+
+    // O valor grande é o que passa no cartão. Com taxa paga pelo cliente, ele já inclui o acréscimo.
+    totalLabel.textContent = taxa > 0 && quem === "cliente" ? "Total a cobrar no cartão" : "Total da venda";
+    totalEl.textContent = brl.format(cobrado);
+    renderParcelas(cobrado);
 
     if (!(total > 0)) {
       breakdown.innerHTML = "";
       return;
     }
-    const lucro = total - custo;
+    const lucro = total - custo - (quem === "loja" ? valorTaxa : 0);
     breakdown.innerHTML = `
       <div class="line"><span>Subtotal (preço de tabela)</span><strong>${brl.format(subtotal)}</strong></div>
       ${d > 0 ? `<div class="line"><span>Desconto de ${pct(d)}</span><strong>− ${brl.format(subtotal - total)}</strong></div>` : ""}
+      ${taxa > 0 ? `<div class="line"><span>Valor da venda</span><strong>${brl.format(total)}</strong></div>` : ""}
+      ${taxa > 0 && quem === "cliente" ? `<div class="line"><span>Taxa da maquininha (${pct(taxa)}), paga pelo cliente</span><strong>+ ${brl.format(valorTaxa)}</strong></div>` : ""}
+      ${taxa > 0 && quem === "loja" ? `<div class="line"><span>Taxa da maquininha (${pct(taxa)}), paga pela loja</span><strong>− ${brl.format(valorTaxa)}</strong></div>` : ""}
       <div class="line"><span>Custo das peças</span><strong>${brl.format(custo)}</strong></div>
       <div class="line total ${lucro < 0 ? "bad" : ""}"><span>Lucro desta venda</span><strong>${brl.format(lucro)} · ${pct((lucro / total) * 100)} da venda</strong></div>
       ${lucro < 0 ? '<p class="warn small">Atenção: esta venda está abaixo do custo e dá prejuízo.</p>' : ""}`;
@@ -1619,7 +1652,7 @@ function initVendas() {
       .map((v) => {
         const cliente = cache.clientes.find((c) => c.id === v.clienteId);
         const pecas = v.itens.reduce((sum, i) => sum + i.quantidade, 0);
-        const lucro = v.itens.reduce((sum, i) => sum + i.quantidade * (i.preco - i.custo), 0);
+        const lucro = v.itens.reduce((sum, i) => sum + i.quantidade * (i.preco - i.custo), 0) - (v.taxaPagaPor === "loja" ? v.valorTaxa : 0);
         const action = v.estornada
           ? '<span class="muted small">Desfeita</span>'
           : `<button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
@@ -1630,7 +1663,7 @@ function initVendas() {
             <td>${escapeHtml(formaVenda(v) || "—")}</td>
             <td>${pecas} peça(s)</td>
             <td>${v.desconto > 0 ? pct(v.desconto) : "—"}</td>
-            <td><strong>${brl.format(v.total)}</strong></td>
+            <td><strong>${brl.format(v.total)}</strong>${v.taxaPagaPor === "cliente" && v.valorTaxa > 0 ? `<br><span class="muted small">cobrado ${brl.format(v.totalCobrado)}</span>` : ""}</td>
             <td class="${lucro < 0 ? "tag-out" : "tag-in"}">${brl.format(lucro)}</td>
             <td>${action}</td>
           </tr>`;
@@ -1672,6 +1705,8 @@ function initVendas() {
 
   itemsBox.addEventListener("input", renderTotal);
   form.elements.desconto.addEventListener("input", renderTotal);
+  form.elements.taxa.addEventListener("input", renderTotal);
+  form.elements.taxaPaga.addEventListener("change", renderTotal);
   form.elements.forma.addEventListener("change", renderTotal);
 
   itemsBox.addEventListener("click", (event) => {
@@ -1697,6 +1732,10 @@ function initVendas() {
       message.textContent = "O desconto precisa estar entre 0% e 99,9%.";
       return;
     }
+    if (isCredit() && form.elements.taxa.value !== "" && (num(form.elements.taxa.value) < 0 || num(form.elements.taxa.value) >= 50)) {
+      message.textContent = "A taxa da maquininha precisa estar entre 0% e 49,9%.";
+      return;
+    }
     const total = itens.reduce((sum, i) => sum + i.quantidade * finalPrice(i.preco, desconto), 0);
     if (!(total > 0)) {
       message.textContent = "O total da venda precisa ser maior que zero.";
@@ -1711,6 +1750,8 @@ function initVendas() {
       p_itens: itens,
       p_parcelas: isCredit() ? Number(parcelasSelect.value) : 1,
       p_desconto: desconto,
+      p_taxa: feePct(),
+      p_taxa_paga_por: form.elements.taxaPaga.value,
     });
     if (error) {
       message.textContent = `Não foi possível registrar a venda. ${error.message}`;
@@ -1719,6 +1760,7 @@ function initVendas() {
     message.textContent = "Venda registrada.";
     form.elements.obs.value = "";
     form.elements.desconto.value = "";
+    form.elements.taxa.value = "";
     parcelasSelect.value = "1";
     itemsBox.innerHTML = "";
     await refreshAll();
@@ -2139,6 +2181,7 @@ function summaryRows(r) {
     { label: "Margem bruta (sobre a venda)", value: l.margem / 100, type: "pct" },
     { label: "Lucro sobre o custo", value: l.markup / 100, type: "pct" },
     { label: "Despesas lançadas (energia, cápsulas...)", value: l.despesas, type: "money" },
+    { label: "Taxas da maquininha pagas pela loja", value: l.taxas, type: "money" },
     { label: "Lucro líquido", value: l.lucroLiquido, type: "money" },
     { section: "Financeiro (caixa)" },
     { label: "Compras de peças", value: l.comprasPecas, type: "money" },
