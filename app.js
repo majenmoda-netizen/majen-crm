@@ -142,6 +142,8 @@ const tripFromRow = (r) => ({
   total: num(r.total),
   porPeca: num(r.por_peca),
   obs: r.obs || "",
+  trajeto: r.trajeto || "",
+  trajetoDetalhe: r.trajeto_detalhe || null,
   fornecedorIds: [],
 });
 
@@ -203,6 +205,8 @@ const lancamentoFromRow = (r) => ({
   descricao: r.descricao || "",
   valor: num(r.valor),
   forma: r.forma_pagamento || "",
+  origem: r.origem || "manual",
+  refId: r.ref_id || null,
 });
 
 const vendaFromRow = (r) => ({
@@ -212,6 +216,8 @@ const vendaFromRow = (r) => ({
   forma: r.forma_pagamento || "",
   total: num(r.total),
   parcelas: num(r.parcelas || 1),
+  desconto: num(r.desconto_percentual || 0),
+  subtotal: num(r.subtotal || r.total),
   estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
@@ -266,7 +272,146 @@ function friendlyError(error) {
   return `Não foi possível salvar. Verifique a conexão e tente de novo.${detail}`;
 }
 
+// ---------- Custos e lucro (usado em várias telas) ----------
+
+const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+const pct = (value) => `${value.toFixed(1).replace(".", ",")}%`;
+
+// Custos e lucro de um período. Vendas desfeitas ficam de fora.
+//  faturamento      = o que entrou nas vendas (já com desconto)
+//  custoVendido     = custo das peças vendidas (produto + transporte da viagem)
+//  lucroBruto       = faturamento - custoVendido
+//  despesas         = saídas lançadas à mão no Financeiro (energia, cápsulas, aluguel...)
+//  lucroLiquido     = lucroBruto - despesas
+//  caixa            = tudo que entrou e saiu (inclui compras de peças e transporte)
+function profitSummary(inRange = () => true) {
+  const ativas = cache.vendas.filter((v) => !v.estornada && inRange(v.data));
+  let faturamento = 0;
+  let custoVendido = 0;
+  let pecas = 0;
+  ativas.forEach((v) => {
+    faturamento += v.total;
+    v.itens.forEach((i) => {
+      custoVendido += i.quantidade * i.custo;
+      pecas += i.quantidade;
+    });
+  });
+  const lanc = cache.lancamentos.filter((l) => inRange(l.data));
+  const soma = (origem, tipo) => lanc.filter((l) => l.origem === origem && l.tipo === tipo).reduce((s, l) => s + l.valor, 0);
+  const comprasPecas = soma("compra_pecas", "saida") - soma("estorno_compra", "entrada");
+  const transporte = soma("viagem", "saida") - soma("estorno_viagem", "entrada");
+  const despesas = soma("manual", "saida");
+  const lucroBruto = faturamento - custoVendido;
+  return {
+    vendas: ativas.length,
+    pecas,
+    faturamento,
+    custoVendido,
+    lucroBruto,
+    margem: faturamento > 0 ? (lucroBruto / faturamento) * 100 : 0,
+    markup: custoVendido > 0 ? (lucroBruto / custoVendido) * 100 : 0,
+    comprasPecas,
+    transporte,
+    despesas,
+    lucroLiquido: lucroBruto - despesas,
+    entradas: sumByTipo(lanc, "entrada"),
+    saidas: sumByTipo(lanc, "saida"),
+  };
+}
+
+// Cartão grande de indicador; "tone" destaca (rosa) ou avisa (vermelho) e "sub" é a linha de apoio.
+function kpiCard(label, value, { sub = "", tone = "", negative = false } = {}) {
+  return `<div class="card kpi ${tone}"><span class="muted small">${label}</span><strong class="${negative ? "neg" : ""}">${value}</strong>${sub ? `<span class="kpi-sub">${sub}</span>` : ""}</div>`;
+}
+
+// Bloco "Custos e lucro": a resposta de quanto custou, quanto ficou e quanto sobrou.
+function profitBlockHtml(s, title = "Custos e lucro") {
+  return `
+    <div class="profit-block">
+      <h2>${title}</h2>
+      <div class="kpis">
+        ${kpiCard("Faturamento (vendas)", moneyText(s.faturamento), { sub: `${s.vendas} venda(s) · ${s.pecas} peça(s)` })}
+        ${kpiCard("Custo das peças vendidas", moneyText(s.custoVendido), { sub: "produto + transporte da viagem", tone: "cost" })}
+        ${kpiCard("Lucro bruto", moneyText(s.lucroBruto), { sub: `${pct(s.margem)} da venda · ${pct(s.markup)} sobre o custo`, tone: "profit", negative: s.lucroBruto < 0 })}
+        ${kpiCard("Despesas lançadas", moneyText(s.despesas), { sub: "energia, cápsulas, aluguel...", tone: "cost" })}
+        ${kpiCard("Lucro líquido", moneyText(s.lucroLiquido), { sub: "lucro bruto − despesas", tone: "profit", negative: s.lucroLiquido < 0 })}
+      </div>
+      <div class="kpis">
+        ${kpiCard("Compras de peças (caixa)", moneyText(s.comprasPecas), { sub: "o que saiu para comprar estoque", tone: "cost" })}
+        ${kpiCard("Transporte das viagens (caixa)", moneyText(s.transporte), { sub: "combustível + pedágio", tone: "cost" })}
+        ${kpiCard("Entradas no caixa", moneyText(s.entradas))}
+        ${kpiCard("Saídas do caixa", moneyText(s.saidas))}
+        ${kpiCard("Resultado do caixa", moneyText(s.entradas - s.saidas), { negative: s.entradas - s.saidas < 0 })}
+      </div>
+    </div>`;
+}
+
 // ---------- Viagens ----------
+
+// Com a sigla do estado a busca no mapa acerta a cidade (há várias cidades e bairros com o mesmo nome).
+const DEFAULT_ROUTE = ["Sorocaba, SP", "Piedade, SP", "São Paulo, SP"];
+const shortPlace = (name) => String(name).split(",")[0].trim();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Procura o local no mapa (OpenStreetMap/Nominatim). Guarda a resposta para não repetir a busca.
+async function geocodePlace(name) {
+  const key = name.trim().toLowerCase();
+  try {
+    const saved = JSON.parse(localStorage.getItem(`majen:geo:${key}`) || "null");
+    if (saved) return { ...saved, fromCache: true };
+  } catch (error) {
+    // Sem armazenamento local, a busca é refeita.
+  }
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(`${name}, Brasil`)}&format=jsonv2&limit=1&countrycodes=br&accept-language=pt-BR`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`a busca de "${name}" falhou (${response.status})`);
+  const results = await response.json();
+  if (!results.length) throw new Error(`não encontrei "${name}" no mapa`);
+  const found = { lat: Number(results[0].lat), lon: Number(results[0].lon), nome: results[0].display_name };
+  try {
+    localStorage.setItem(`majen:geo:${key}`, JSON.stringify(found));
+  } catch (error) {
+    // Ignora: só perde o atalho para a próxima vez.
+  }
+  return found;
+}
+
+// Calcula o caminho de carro passando pelos pontos, na ordem (OSRM). Devolve km e minutos de cada trecho.
+async function routeBetween(points) {
+  const coords = points.map((p) => `${p.lon},${p.lat}`).join(";");
+  const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=false`);
+  if (!response.ok) throw new Error(`o cálculo da rota falhou (${response.status})`);
+  const data = await response.json();
+  if (data.code !== "Ok" || !data.routes.length) throw new Error("não encontrei um caminho de carro entre esses pontos");
+  const route = data.routes[0];
+  return {
+    km: route.distance / 1000,
+    trechos: route.legs.map((leg) => ({ km: leg.distance / 1000, min: leg.duration / 60 })),
+  };
+}
+
+// Números de uma viagem: quanto foi investido (transporte + produtos), quanto já voltou em vendas e o lucro projetado.
+function tripStats(t) {
+  const pecas = cache.estoque.filter((p) => p.viagemId === t.id);
+  const ids = new Set(pecas.map((p) => p.id));
+  const cadastradas = pecas.reduce((s, p) => s + p.quantidadeInicial, 0);
+  const produtos = pecas.reduce((s, p) => s + p.quantidadeInicial * p.custoProduto, 0);
+  const noEstoque = pecas.reduce((s, p) => s + p.quantidade * p.precoVenda, 0);
+  let vendido = 0;
+  cache.vendas
+    .filter((v) => !v.estornada)
+    .forEach((v) =>
+      v.itens.forEach((i) => {
+        if (ids.has(i.estoqueId)) vendido += i.quantidade * i.preco;
+      })
+    );
+  const investido = t.total + produtos;
+  const lucroProjetado = vendido + noEstoque - investido;
+  return {
+    cadastradas, produtos, investido, vendido, noEstoque, lucroProjetado,
+    lucroPct: investido > 0 ? (lucroProjetado / investido) * 100 : 0,
+  };
+}
 
 function initTrips() {
   const form = document.getElementById("trip-form");
@@ -275,9 +420,120 @@ function initTrips() {
   const preview = document.getElementById("trip-preview");
   const message = document.getElementById("trip-message");
   const list = document.getElementById("trip-list");
+  const kpis = document.getElementById("trip-kpis");
   const storesBox = document.getElementById("trip-stores");
+  const pointsBox = document.getElementById("route-points");
+  const returnBox = document.getElementById("route-return");
+  const routeMessage = document.getElementById("route-message");
+  const routeLegs = document.getElementById("route-legs");
+  let routeData = null; // resultado do último "Calcular rota"; some se os pontos mudarem
   form.elements.data.value = todayBR();
   maskDateBR(form.elements.data);
+
+  // ----- Trajeto: pontos editáveis (saída, paradas e destino) -----
+
+  function pointRows() {
+    return [...pointsBox.querySelectorAll(".route-point")];
+  }
+
+  function labelPoints() {
+    const rows = pointRows();
+    rows.forEach((row, index) => {
+      const isFirst = index === 0;
+      const isLast = index === rows.length - 1;
+      row.querySelector(".route-label").textContent = isFirst ? "Saída" : isLast ? "Destino" : `Parada ${index}`;
+      row.querySelector('[data-field="remover-ponto"]').hidden = isFirst || isLast;
+    });
+  }
+
+  function addPoint(value = "", beforeLast = false) {
+    const row = document.createElement("div");
+    row.className = "route-point";
+    row.innerHTML = `
+      <span class="route-label"></span>
+      <input type="text" data-field="ponto" placeholder="Cidade, UF ou endereço" aria-label="Ponto do trajeto">
+      <button type="button" class="link-btn" data-field="remover-ponto">Remover</button>`;
+    row.querySelector('[data-field="ponto"]').value = value;
+    const rows = pointRows();
+    if (beforeLast && rows.length >= 2) pointsBox.insertBefore(row, rows[rows.length - 1]);
+    else pointsBox.appendChild(row);
+    labelPoints();
+  }
+
+  const placeNames = () => pointRows().map((row) => row.querySelector('[data-field="ponto"]').value.trim());
+
+  // Texto do trajeto, ex.: Sorocaba → Piedade → São Paulo → Sorocaba
+  function routeText() {
+    const names = placeNames().filter(Boolean);
+    if (names.length === 0) return "";
+    return (returnBox.checked ? [...names, names[0]] : names).map(shortPlace).join(" → ");
+  }
+
+  function invalidateRoute() {
+    if (routeData) {
+      routeData = null;
+      routeLegs.innerHTML = "";
+      routeMessage.textContent = "Você mudou o trajeto. Clique em Calcular rota para atualizar os km.";
+    }
+  }
+
+  function renderLegs() {
+    if (!routeData) {
+      routeLegs.innerHTML = "";
+      return;
+    }
+    const rows = routeData.trechos
+      .map((t) => `<tr><td>${escapeHtml(shortPlace(t.de))} → ${escapeHtml(shortPlace(t.para))}</td><td>${t.km.toFixed(1).replace(".", ",")} km</td><td>${Math.round(t.min)} min</td></tr>`)
+      .join("");
+    routeLegs.innerHTML = `
+      <table>
+        <thead><tr><th>Trecho</th><th>Distância</th><th>Tempo</th></tr></thead>
+        <tbody>${rows}<tr class="total-row"><td>Total (${routeData.paradas} parada(s)${routeData.volta ? ", com volta" : ""})</td><td>${routeData.km.toFixed(1).replace(".", ",")} km</td><td>${Math.round(routeData.trechos.reduce((s, t) => s + t.min, 0))} min</td></tr></tbody>
+      </table>
+      <p class="muted small">Locais encontrados no mapa (confira se são os certos): ${routeData.pontos
+        .map((p) => `${escapeHtml(shortPlace(p.nome))} = ${escapeHtml(p.local.split(",").slice(0, 3).join(","))}`)
+        .join(" · ")}</p>`;
+  }
+
+  // Busca os locais, calcula o caminho de carro e preenche os km da viagem.
+  async function calculateRoute() {
+    const names = placeNames();
+    if (names.length < 2 || names.some((n) => !n)) {
+      routeMessage.textContent = "Preencha a saída, as paradas e o destino.";
+      return;
+    }
+    const sequence = returnBox.checked ? [...names, names[0]] : names;
+    routeMessage.textContent = "Buscando os locais no mapa...";
+    try {
+      const places = [];
+      for (const name of sequence) {
+        const place = await geocodePlace(name);
+        places.push({ ...place, pedido: name });
+        if (!place.fromCache) await sleep(1100); // a busca gratuita pede no máximo 1 consulta por segundo
+      }
+      routeMessage.textContent = "Calculando o caminho de carro...";
+      const route = await routeBetween(places);
+      routeData = {
+        km: route.km,
+        paradas: Math.max(0, names.length - 2),
+        volta: returnBox.checked,
+        pontos: places.map((p) => ({ nome: p.pedido, local: p.nome, lat: p.lat, lon: p.lon })),
+        trechos: route.trechos.map((t, i) => ({ de: sequence[i], para: sequence[i + 1], km: t.km, min: t.min })),
+        fonte: "OpenStreetMap (Nominatim) e OSRM",
+        calculadoEm: new Date().toISOString(),
+      };
+      form.elements.km.value = route.km.toFixed(1);
+      routeMessage.textContent = `Rota calculada: ${route.km.toFixed(1).replace(".", ",")} km. Os km da viagem foram atualizados; você ainda pode ajustar.`;
+      renderLegs();
+      renderPreview();
+    } catch (error) {
+      routeData = null;
+      routeLegs.innerHTML = "";
+      routeMessage.textContent = `Não consegui calcular a rota (${error.message}). Você pode digitar os km na mão.`;
+    }
+  }
+
+  // ----- Cálculo da viagem -----
 
   function readInputs() {
     return {
@@ -290,7 +546,7 @@ function initTrips() {
   }
 
   function isValid(values) {
-    return values.km > 0 && values.consumo > 0 && values.preco > 0 && values.pecas > 0 && values.pedagio >= 0;
+    return values.km > 0 && values.consumo > 0 && values.preco > 0 && Number.isInteger(values.pecas) && values.pecas > 0 && values.pedagio >= 0;
   }
 
   function renderPreview() {
@@ -304,83 +560,124 @@ function initTrips() {
       <div class="line"><span>Litros gastos</span><strong>${r.litros.toFixed(1)} L</strong></div>
       <div class="line"><span>Combustível</span><strong>${brl.format(r.combustivel)}</strong></div>
       <div class="line"><span>Pedágio</span><strong>${brl.format(values.pedagio)}</strong></div>
-      <div class="line total"><span>Custo da viagem</span><strong>${brl.format(r.total)}</strong></div>
-      <div class="line total"><span>Custo por peça</span><strong>${brl.format(r.porPeca)}</strong></div>
+      <div class="line total"><span>Custo da viagem (sai do caixa)</span><strong>${brl.format(r.total)}</strong></div>
+      <div class="line total"><span>Custo de transporte por peça</span><strong>${brl.format(r.porPeca)}</strong></div>
     `;
   }
 
   function renderList() {
     const trips = cache.viagens;
+    const totalTransporte = trips.reduce((s, t) => s + t.total, 0);
+    const totalKm = trips.reduce((s, t) => s + t.km, 0);
+    const stats = trips.map((t) => tripStats(t));
+    const investido = stats.reduce((s, x) => s + x.investido, 0);
+    const lucro = stats.reduce((s, x) => s + x.lucroProjetado, 0);
+    kpis.innerHTML = trips.length
+      ? [
+          kpiCard("Gasto com transporte", moneyText(totalTransporte), { sub: `${trips.length} viagem(ns) · ${totalKm.toFixed(0)} km`, tone: "cost" }),
+          kpiCard("Investido (transporte + produtos)", moneyText(investido), { tone: "cost" }),
+          kpiCard("Lucro projetado das viagens", moneyText(lucro), { sub: investido > 0 ? `${pct((lucro / investido) * 100)} sobre o investido` : "", tone: "profit", negative: lucro < 0 }),
+        ].join("")
+      : "";
+
     if (trips.length === 0) {
       list.innerHTML = '<p class="muted">Nenhuma viagem registrada ainda.</p>';
       return;
     }
     const rows = trips
-      .map((t) => `
-        <tr>
-          <td>${formatDate(t.data)}</td>
-          <td>${escapeHtml(lojasTexto(t))}</td>
-          <td>${t.km} km</td>
-          <td>${brl.format(t.preco)}/L</td>
-          <td>${t.pecas}</td>
-          <td>${brl.format(t.total)}</td>
-          <td><strong>${brl.format(t.porPeca)}</strong></td>
-          <td><button class="link-btn" data-remove="${t.id}" type="button">Remover</button></td>
-        </tr>`)
+      .map((t, index) => {
+        const s = stats[index];
+        const detalhe = t.trajetoDetalhe;
+        const paradas = detalhe && Number.isInteger(detalhe.paradas) ? detalhe.paradas : null;
+        const dica = detalhe && detalhe.trechos
+          ? detalhe.trechos.map((x) => `${shortPlace(x.de)} → ${shortPlace(x.para)}: ${x.km.toFixed(1)} km (${Math.round(x.min)} min)`).join("\n")
+          : "";
+        const faltam = t.pecas - s.cadastradas;
+        return `
+          <tr>
+            <td>${formatDate(t.data)}</td>
+            <td>${escapeHtml(lojasTexto(t))}</td>
+            <td title="${escapeHtml(dica)}">${escapeHtml(t.trajeto || "—")}${paradas === null ? "" : `<br><span class="muted small">${paradas === 0 ? "sem paradas" : `${paradas} parada(s)`}</span>`}</td>
+            <td>${t.km} km</td>
+            <td><strong>${brl.format(t.total)}</strong></td>
+            <td>${s.cadastradas}/${t.pecas}${faltam > 0 ? `<br><span class="muted small">faltam ${faltam}</span>` : ""}</td>
+            <td>${brl.format(s.produtos)}</td>
+            <td><strong>${brl.format(s.investido)}</strong></td>
+            <td>${brl.format(s.vendido)}</td>
+            <td class="${s.lucroProjetado < 0 ? "tag-out" : "tag-in"}"><strong>${brl.format(s.lucroProjetado)}</strong><br><span class="small">${pct(s.lucroPct)}</span></td>
+            <td><button class="link-btn" data-remove="${t.id}" type="button">Remover</button></td>
+          </tr>`;
+      })
       .join("");
     list.innerHTML = `
       <table>
         <thead>
-          <tr><th>Data</th><th>Lojas</th><th>Km</th><th>Combustível</th><th>Peças</th><th>Custo viagem</th><th>Por peça</th><th></th></tr>
+          <tr><th>Data</th><th>Lojas</th><th>Trajeto</th><th>Km</th><th>Custo da viagem</th><th>Peças cadastradas</th><th>Produtos</th><th>Investido</th><th>Já vendido</th><th>Lucro projetado</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
-      </table>`;
+      </table>
+      <p class="muted small">Investido = custo da viagem + produtos das peças cadastradas nela. Lucro projetado = vendido + o que ainda está no estoque (a preço de venda) − investido.</p>`;
   }
 
   form.addEventListener("input", renderPreview);
+
+  pointsBox.addEventListener("input", invalidateRoute);
+  pointsBox.addEventListener("click", (event) => {
+    if (event.target.dataset.field !== "remover-ponto") return;
+    event.target.closest(".route-point").remove();
+    labelPoints();
+    invalidateRoute();
+  });
+  returnBox.addEventListener("change", invalidateRoute);
+  document.getElementById("route-add-stop").addEventListener("click", () => {
+    addPoint("", true);
+    invalidateRoute();
+  });
+  document.getElementById("route-calc").addEventListener("click", calculateRoute);
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = readInputs();
     const dataIso = parseDateBR(form.elements.data.value);
     if (!dataIso || !isValid(values)) {
-      message.textContent = "Confira a data (DD/MM/AAAA) e os campos obrigatórios.";
+      message.textContent = "Confira a data (DD/MM/AAAA), os números e a quantidade de peças (número inteiro).";
       return;
     }
     const r = calculateTrip(values);
-    const { data: saved, error } = await db.from("viagens").insert({
-      data: dataIso,
-      km: values.km,
-      consumo: values.consumo,
-      tipo_combustivel: form.elements.tipoCombustivel.value,
-      preco: values.preco,
-      pedagio: values.pedagio,
-      pecas: values.pecas,
-      litros: r.litros,
-      combustivel: r.combustivel,
-      total: r.total,
-      por_peca: r.porPeca,
-      obs: form.elements.obs.value.trim() || null,
-    }).select("id").single();
-    if (error) {
-      message.textContent = friendlyError(error);
-      return;
-    }
+    const names = placeNames();
+    const detalhe = routeData || {
+      pontos: names.filter(Boolean).map((nome) => ({ nome })),
+      paradas: Math.max(0, names.filter(Boolean).length - 2),
+      volta: returnBox.checked,
+      calculado: false,
+    };
     const lojas = [...storesBox.querySelectorAll("input:checked")].map((input) => input.value);
-    if (lojas.length > 0) {
-      const { error: linkError } = await db
-        .from("viagem_fornecedores")
-        .insert(lojas.map((id) => ({ viagem_id: saved.id, fornecedor_id: id })));
-      if (linkError) {
-        message.textContent = `Viagem salva, mas as lojas não foram registradas. ${linkError.message}`;
-        await refreshAll();
-        return;
-      }
+    message.textContent = "Salvando...";
+    const { error } = await db.rpc("registrar_viagem", {
+      p_data: dataIso,
+      p_km: values.km,
+      p_consumo: values.consumo,
+      p_tipo_combustivel: form.elements.tipoCombustivel.value,
+      p_preco: values.preco,
+      p_pedagio: values.pedagio,
+      p_pecas: values.pecas,
+      p_litros: r.litros,
+      p_combustivel: r.combustivel,
+      p_total: r.total,
+      p_por_peca: r.porPeca,
+      p_obs: form.elements.obs.value.trim(),
+      p_fornecedor_ids: lojas,
+      p_trajeto: routeText(),
+      p_trajeto_detalhe: detalhe,
+    });
+    if (error) {
+      message.textContent = `Não foi possível salvar a viagem. ${error.message}`;
+      return;
     }
     storesBox.querySelectorAll("input:checked").forEach((input) => {
       input.checked = false;
     });
-    message.textContent = "Viagem salva.";
+    message.textContent = `Viagem salva. ${brl.format(r.total)} foram lançados como saída no caixa.`;
     form.elements.pecas.value = "";
     form.elements.obs.value = "";
     await refreshAll();
@@ -390,12 +687,22 @@ function initTrips() {
   list.addEventListener("click", async (event) => {
     const id = event.target.dataset.remove;
     if (!id) return;
-    if (!window.confirm("Remover esta viagem do histórico?")) return;
-    const { error } = await db.from("viagens").delete().eq("id", id);
+    const t = cache.viagens.find((x) => x.id === id);
+    if (!t) return;
+    const s = tripStats(t);
+    const aviso = [
+      `Remover a viagem de ${formatDate(t.data)}?`,
+      `Os ${brl.format(t.total)} do transporte voltam ao caixa como "Estorno de transporte".`,
+      s.cadastradas > 0 ? `${s.cadastradas} peça(s) cadastrada(s) nela continuam no estoque e mantêm o custo de transporte já calculado.` : "",
+      "Isso não pode ser desfeito.",
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(aviso)) return;
+    const { error } = await db.rpc("remover_viagem", { p_id: id, p_data: todayISO() });
     if (error) {
-      message.textContent = friendlyError(error);
+      message.textContent = `Não foi possível remover a viagem. ${error.message}`;
       return;
     }
+    message.textContent = "Viagem removida e transporte estornado no caixa.";
     await refreshAll();
   });
 
@@ -409,6 +716,7 @@ function initTrips() {
       : '<p class="muted small">Cadastre os fornecedores na aba Fornecedores.</p>';
   }
 
+  DEFAULT_ROUTE.forEach((name) => addPoint(name));
   renderers.push(renderList);
   renderers.push(renderStores);
   renderPreview();
@@ -425,8 +733,10 @@ function initStock() {
   const photoPreview = document.getElementById("stock-photo-preview");
   const message = document.getElementById("stock-message");
   const list = document.getElementById("stock-list");
+  const summary = document.getElementById("stock-summary");
   const search = document.getElementById("stock-search");
   let photoData = "";
+  let editedBy = null; // "margem" ou "preco": qual dos dois você mexeu por último
 
   function fillTrips() {
     const previous = tripSelect.value;
@@ -444,22 +754,64 @@ function initStock() {
     return { custoProduto, custoTransporte, total: custoProduto + custoTransporte };
   }
 
+  // Lucro desejado (%) -> preço final: custo total + % de lucro sobre o custo.
+  function syncFromMargin() {
+    const c = currentCost();
+    const m = form.elements.margem.value;
+    if (c.total > 0 && m !== "" && Number(m) >= 0) {
+      form.elements.precoVenda.value = round2(c.total * (1 + Number(m) / 100)).toFixed(2);
+    }
+  }
+
+  // Preço digitado -> lucro (%) sobre o custo.
+  function syncFromPrice() {
+    const c = currentCost();
+    const preco = num(form.elements.precoVenda.value);
+    if (c.total > 0 && preco > 0) {
+      form.elements.margem.value = ((preco / c.total - 1) * 100).toFixed(1);
+    } else if (!form.elements.precoVenda.value) {
+      form.elements.margem.value = "";
+    }
+  }
+
+  function resync() {
+    if (editedBy === "margem") syncFromMargin();
+    else if (editedBy === "preco") syncFromPrice();
+  }
+
   function renderPreview() {
     const c = currentCost();
     if (!form.elements.custoProduto.value) {
-      preview.innerHTML = '<p class="muted">Informe o custo do produto para ver o preço sugerido.</p>';
+      preview.innerHTML = '<p class="muted">Informe o custo do produto para ver o custo total e o lucro.</p>';
       return;
     }
+    const quantidade = Math.max(0, num(form.elements.quantidade.value) || 0);
+    const preco = num(form.elements.precoVenda.value);
     const sugerido = suggestPrice(c.total);
-    preview.innerHTML = `
+    let html = `
       <div class="line"><span>Produto</span><strong>${brl.format(c.custoProduto)}</strong></div>
       <div class="line"><span>Transporte (viagem)</span><strong>${brl.format(c.custoTransporte)}</strong></div>
-      <div class="line total"><span>Custo total</span><strong>${brl.format(c.total)}</strong></div>
-      <div class="line total"><span>Preço sugerido</span><strong>${brl.format(sugerido)}</strong></div>
-    `;
-    if (!form.elements.precoVenda.value) {
-      form.elements.precoVenda.placeholder = sugerido.toFixed(2).replace(".", ",");
+      <div class="line total"><span>Custo total por peça</span><strong>${brl.format(c.total)}</strong></div>`;
+    if (preco > 0 && c.total > 0) {
+      const lucro = preco - c.total;
+      html += `
+        <div class="line"><span>Preço de venda</span><strong>${brl.format(preco)}</strong></div>
+        <div class="line total ${lucro < 0 ? "bad" : ""}"><span>Lucro por peça</span><strong>${brl.format(lucro)}</strong></div>
+        <div class="line"><span>Lucro sobre o custo</span><strong>${pct((lucro / c.total) * 100)}</strong></div>
+        <div class="line"><span>Margem sobre a venda</span><strong>${pct((lucro / preco) * 100)}</strong></div>`;
+      if (quantidade > 0) {
+        html += `
+        <div class="line"><span>Lote: ${quantidade} peça(s) a ${brl.format(c.custoProduto)} (sai do caixa)</span><strong>${brl.format(quantidade * c.custoProduto)}</strong></div>
+        <div class="line"><span>Lote: vendendo tudo, entram</span><strong>${brl.format(quantidade * preco)}</strong></div>
+        <div class="line total ${lucro < 0 ? "bad" : ""}"><span>Lote: lucro previsto</span><strong>${brl.format(quantidade * lucro)}</strong></div>`;
+      }
+      if (lucro < 0) html += '<p class="warn small">Atenção: o preço está abaixo do custo. Essa peça dá prejuízo.</p>';
+    } else {
+      html += `<div class="line total"><span>Sugestão (30% de margem + 9% de taxas)</span><strong>${brl.format(sugerido)}</strong></div>
+        <p class="muted small">Digite o lucro desejado (%) ou o preço de venda para ver o lucro.</p>`;
+      if (!form.elements.precoVenda.value) form.elements.precoVenda.placeholder = sugerido.toFixed(2).replace(".", ",");
     }
+    preview.innerHTML = html;
   }
 
   // Fornecedores cadastrados na aba Fornecedores; mantém a escolha atual ao atualizar.
@@ -475,6 +827,19 @@ function initStock() {
   function renderList() {
     fillTrips();
     fillSuppliers();
+
+    const unidades = cache.estoque.reduce((s, p) => s + p.quantidade, 0);
+    const custo = cache.estoque.reduce((s, p) => s + p.quantidade * p.custoTotal, 0);
+    const venda = cache.estoque.reduce((s, p) => s + p.quantidade * p.precoVenda, 0);
+    summary.innerHTML = cache.estoque.length
+      ? [
+          kpiCard("Peças em estoque", String(unidades), { sub: `${cache.estoque.length} item(ns) diferente(s)` }),
+          kpiCard("Custo do estoque", moneyText(custo), { sub: "o que foi investido nelas", tone: "cost" }),
+          kpiCard("Valor de venda do estoque", moneyText(venda)),
+          kpiCard("Lucro potencial", moneyText(venda - custo), { sub: custo > 0 ? `${pct(((venda - custo) / custo) * 100)} sobre o custo` : "", tone: "profit", negative: venda - custo < 0 }),
+        ].join("")
+      : "";
+
     const term = search.value.trim().toLowerCase();
     const items = cache.estoque.filter(
       (p) => !term || [p.codigo, p.nome, fornecedorDe(p), p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
@@ -484,7 +849,10 @@ function initStock() {
       return;
     }
     const rows = items
-      .map((item) => `
+      .map((item) => {
+        const lucro = item.precoVenda - item.custoTotal;
+        const lucroPct = item.custoTotal > 0 ? (lucro / item.custoTotal) * 100 : 0;
+        return `
         <tr>
           <td>${item.foto ? `<img class="thumb" src="${item.foto}" alt="">` : "—"}</td>
           <td>${escapeHtml(item.codigo || "—")}</td>
@@ -494,22 +862,25 @@ function initStock() {
           <td>${escapeHtml(item.tamanho || "—")}</td>
           <td>${escapeHtml(item.cor || "—")}</td>
           <td>
-            <button class="link-btn" data-adjust="${item.id}" data-delta="-1" type="button">−</button>
+            <button class="link-btn" data-baixa="${item.id}" type="button" title="Dar baixa (perda, quebra, ajuste)">−</button>
             <strong>${item.quantidade}</strong>
-            <button class="link-btn" data-adjust="${item.id}" data-delta="1" type="button">+</button>
+            <button class="link-btn" data-repor="${item.id}" type="button" title="Chegaram mais unidades (debita o caixa)">+</button>
           </td>
           <td>${brl.format(item.custoTotal)}</td>
           <td><strong>${brl.format(item.precoVenda)}</strong></td>
+          <td class="${lucro < 0 ? "tag-out" : "tag-in"}"><strong>${brl.format(lucro)}</strong><br><span class="small">${pct(lucroPct)}</span></td>
           <td><button class="link-btn" data-remove="${item.id}" type="button">Remover</button></td>
-        </tr>`)
+        </tr>`;
+      })
       .join("");
     list.innerHTML = `
       <table>
         <thead>
-          <tr><th>Foto</th><th>Código</th><th>Nome</th><th>Fornecedor</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th></th></tr>
+          <tr><th>Foto</th><th>Código</th><th>Nome</th><th>Fornecedor</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th>Lucro por peça</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
-      </table>`;
+      </table>
+      <p class="muted small">Custo = produto + transporte da viagem. Lucro % = lucro sobre o custo. O botão + registra a chegada de mais unidades e debita o caixa; o − dá baixa sem mexer no caixa.</p>`;
   }
 
   form.elements.foto.addEventListener("change", async (event) => {
@@ -525,13 +896,27 @@ function initStock() {
     }
   });
 
-  form.addEventListener("input", renderPreview);
+  form.addEventListener("input", (event) => {
+    const name = event.target.name;
+    if (name === "margem") {
+      editedBy = "margem";
+      syncFromMargin();
+    } else if (name === "precoVenda") {
+      editedBy = "preco";
+      syncFromPrice();
+    } else if (name === "custoProduto") {
+      resync();
+    }
+    renderPreview();
+  });
+
   tripSelect.addEventListener("change", () => {
     // Se a viagem passou numa loja só e o fornecedor ainda está em branco, já sugere essa loja.
     const trip = cache.viagens.find((t) => t.id === tripSelect.value);
     if (trip && trip.fornecedorIds.length === 1 && !form.elements.fornecedorId.value) {
       form.elements.fornecedorId.value = trip.fornecedorIds[0];
     }
+    resync();
     renderPreview();
   });
   search.addEventListener("input", renderList);
@@ -541,58 +926,94 @@ function initStock() {
     const nome = form.elements.nome.value.trim();
     const quantidade = num(form.elements.quantidade.value);
     const custoProduto = num(form.elements.custoProduto.value);
-    if (!nome || !(quantidade > 0) || form.elements.custoProduto.value === "") {
-      message.textContent = "Confira nome, quantidade e custo do produto.";
+    if (!nome || !Number.isInteger(quantidade) || quantidade < 1 || form.elements.custoProduto.value === "" || custoProduto < 0) {
+      message.textContent = "Confira nome, quantidade (número inteiro) e custo do produto.";
       return;
     }
     const c = currentCost();
     const precoVenda = num(form.elements.precoVenda.value) || suggestPrice(c.total);
-    const { error } = await db.from("estoque").insert({
-      codigo: form.elements.codigo.value.trim() || null,
-      fornecedor_id: form.elements.fornecedorId.value || null,
-      quantidade_inicial: quantidade,
-      nome,
-      categoria: form.elements.categoria.value,
-      tamanho: form.elements.tamanho.value.trim() || null,
-      cor: form.elements.cor.value.trim() || null,
-      quantidade,
-      viagem_id: tripSelect.value || null,
-      custo_produto: custoProduto,
-      custo_transporte: c.custoTransporte,
-      custo_total: c.total,
-      preco_venda: precoVenda,
-      foto: photoData || null,
+    message.textContent = "Salvando...";
+    const { error } = await db.rpc("registrar_entrada_estoque", {
+      p_nome: nome,
+      p_categoria: form.elements.categoria.value,
+      p_quantidade: quantidade,
+      p_custo_produto: custoProduto,
+      p_custo_transporte: c.custoTransporte,
+      p_custo_total: c.total,
+      p_preco_venda: precoVenda,
+      p_data: todayISO(),
+      p_codigo: form.elements.codigo.value.trim() || null,
+      p_fornecedor_id: form.elements.fornecedorId.value || null,
+      p_tamanho: form.elements.tamanho.value.trim() || null,
+      p_cor: form.elements.cor.value.trim() || null,
+      p_viagem_id: tripSelect.value || null,
+      p_foto: photoData || null,
     });
     if (error) {
-      message.textContent = friendlyError(error);
+      message.textContent = `Não foi possível salvar a peça. ${error.message}`;
       return;
     }
-    message.textContent = "Peça salva.";
+    message.textContent = `Peça salva. ${brl.format(quantidade * custoProduto)} foram lançados como saída no caixa (compra de peças).`;
     form.reset();
     form.elements.quantidade.value = 1;
+    editedBy = null;
     photoData = "";
     photoPreview.innerHTML = "";
     await refreshAll();
     renderPreview();
   });
 
+  // Pede um número inteiro positivo; devolve null se cancelar ou digitar algo inválido.
+  function askQuantity(text) {
+    const answer = window.prompt(text, "1");
+    if (answer === null) return null;
+    const n = Number(answer.replace(",", "."));
+    if (!Number.isInteger(n) || n < 1) {
+      message.textContent = "Informe um número inteiro de 1 em diante.";
+      return null;
+    }
+    return n;
+  }
+
   list.addEventListener("click", async (event) => {
-    const { adjust, delta, remove } = event.target.dataset;
-    if (adjust) {
-      const item = cache.estoque.find((i) => i.id === adjust);
+    const { repor, baixa, remove } = event.target.dataset;
+    if (repor) {
+      const item = cache.estoque.find((i) => i.id === repor);
       if (!item) return;
-      const { error } = await db.from("estoque").update({ quantidade: Math.max(0, item.quantidade + num(delta)) }).eq("id", adjust);
+      const n = askQuantity(`Quantas unidades de "${item.nome}" chegaram?\nCada uma custa ${brl.format(item.custoProduto)} e o total será lançado como saída no caixa.`);
+      if (n === null) return;
+      const { error } = await db.rpc("repor_estoque", { p_estoque_id: repor, p_quantidade: n, p_data: todayISO() });
       if (error) {
-        message.textContent = friendlyError(error);
+        message.textContent = `Não foi possível repor. ${error.message}`;
         return;
       }
+      message.textContent = `${n} unidade(s) adicionadas. ${brl.format(n * item.custoProduto)} lançados como saída no caixa.`;
+    } else if (baixa) {
+      const item = cache.estoque.find((i) => i.id === baixa);
+      if (!item) return;
+      const n = askQuantity(`Dar baixa em quantas unidades de "${item.nome}"?\nUse para perda, quebra ou ajuste. Isso NÃO mexe no caixa. Para uma venda, use a aba Vendas.`);
+      if (n === null) return;
+      const { error } = await db.rpc("baixar_estoque", { p_estoque_id: baixa, p_quantidade: n });
+      if (error) {
+        message.textContent = `Não foi possível dar baixa. ${error.message}`;
+        return;
+      }
+      message.textContent = `Baixa de ${n} unidade(s) registrada (sem mexer no caixa).`;
     } else if (remove) {
-      if (!window.confirm("Remover esta peça do estoque?")) return;
-      const { error } = await db.from("estoque").delete().eq("id", remove);
+      const item = cache.estoque.find((i) => i.id === remove);
+      if (!item) return;
+      const aviso = [
+        `Remover "${item.nome}" do estoque?`,
+        "Use só se cadastrou por engano. O valor da compra volta ao caixa como \"Estorno de compra\".",
+        "Peça que já teve venda não pode ser removida.",
+      ].join("\n");
+      if (!window.confirm(aviso)) return;
+      const { error } = await db.rpc("remover_peca", { p_estoque_id: remove, p_data: todayISO() });
       if (error) {
-        message.textContent = friendlyError(error);
+        message.textContent = `Não foi possível remover. ${error.message}`;
         return;
       }
+      message.textContent = "Peça removida e compra estornada no caixa.";
     } else {
       return;
     }
@@ -697,7 +1118,8 @@ function initClients() {
       ${client.obs ? `<p class="small">${escapeHtml(client.obs)}</p>` : ""}
       <p><strong>Total gasto:</strong> ${brl.format(totalSpent(client))} em ${client.compras.length} compra(s)</p>
 
-      <h3>Registrar compra</h3>
+      <h3>Registrar compra antiga</h3>
+      <p class="muted small">Só para compras de antes do sistema. Ela entra no total gasto da cliente, mas não baixa o estoque nem entra no caixa. Vendas novas devem ser registradas na aba Vendas.</p>
       <form id="purchase-form" class="row purchase">
         <label>Data <input type="text" name="data" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10" required></label>
         <label>Valor (R$) <input type="number" name="valor" min="0.01" step="0.01" required></label>
@@ -1092,6 +1514,7 @@ function initVendas() {
   const message = document.getElementById("sale-message");
   const list = document.getElementById("sale-list");
   const clienteSelect = form.elements.cliente;
+  const breakdown = document.getElementById("sale-breakdown");
   const parcelasLabel = document.getElementById("sale-parcelas-label");
   const parcelasSelect = form.elements.parcelas;
   const isCredit = () => form.elements.forma.value === "Cartão de crédito";
@@ -1138,10 +1561,38 @@ function initVendas() {
     }));
   }
 
+  // Desconto em % digitado pela pessoa, limitado de 0 a 99,9.
+  const discountPct = () => {
+    const d = num(form.elements.desconto.value || 0);
+    return Number.isFinite(d) ? Math.min(Math.max(d, 0), 99.9) : 0;
+  };
+
+  // Mesma regra do banco: o desconto reduz o preço de cada peça (arredondado em centavos).
+  const finalPrice = (preco, d) => round2(preco * (1 - d / 100));
+
   function renderTotal() {
-    const total = readItems().reduce((sum, i) => sum + i.quantidade * i.preco, 0);
+    const d = discountPct();
+    const itens = readItems();
+    const subtotal = itens.reduce((sum, i) => sum + i.quantidade * i.preco, 0);
+    const total = itens.reduce((sum, i) => sum + i.quantidade * finalPrice(i.preco, d), 0);
+    const custo = itens.reduce((sum, i) => {
+      const p = cache.estoque.find((x) => x.id === i.estoque_id);
+      return sum + i.quantidade * (p ? p.custoTotal : 0);
+    }, 0);
     totalEl.textContent = brl.format(total);
     renderParcelas(total);
+
+    if (!(total > 0)) {
+      breakdown.innerHTML = "";
+      return;
+    }
+    const lucro = total - custo;
+    breakdown.innerHTML = `
+      <div class="line"><span>Subtotal (preço de tabela)</span><strong>${brl.format(subtotal)}</strong></div>
+      ${d > 0 ? `<div class="line"><span>Desconto de ${pct(d)}</span><strong>− ${brl.format(subtotal - total)}</strong></div>` : ""}
+      <div class="line"><span>Custo das peças</span><strong>${brl.format(custo)}</strong></div>
+      <div class="line total ${lucro < 0 ? "bad" : ""}"><span>Lucro desta venda</span><strong>${brl.format(lucro)} · ${pct((lucro / total) * 100)} da venda</strong></div>
+      ${lucro < 0 ? '<p class="warn small">Atenção: esta venda está abaixo do custo e dá prejuízo.</p>' : ""}`;
   }
 
   function renderVendas() {
@@ -1168,6 +1619,7 @@ function initVendas() {
       .map((v) => {
         const cliente = cache.clientes.find((c) => c.id === v.clienteId);
         const pecas = v.itens.reduce((sum, i) => sum + i.quantidade, 0);
+        const lucro = v.itens.reduce((sum, i) => sum + i.quantidade * (i.preco - i.custo), 0);
         const action = v.estornada
           ? '<span class="muted small">Desfeita</span>'
           : `<button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
@@ -1177,14 +1629,16 @@ function initVendas() {
             <td>${cliente ? escapeHtml(cliente.nome) : "—"}</td>
             <td>${escapeHtml(formaVenda(v) || "—")}</td>
             <td>${pecas} peça(s)</td>
+            <td>${v.desconto > 0 ? pct(v.desconto) : "—"}</td>
             <td><strong>${brl.format(v.total)}</strong></td>
+            <td class="${lucro < 0 ? "tag-out" : "tag-in"}">${brl.format(lucro)}</td>
             <td>${action}</td>
           </tr>`;
       })
       .join("");
     list.innerHTML = `
       <table>
-        <thead><tr><th>Data</th><th>Cliente</th><th>Pagamento</th><th>Itens</th><th>Total</th><th></th></tr></thead>
+        <thead><tr><th>Data</th><th>Cliente</th><th>Pagamento</th><th>Itens</th><th>Desconto</th><th>Total</th><th>Lucro</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   }
@@ -1217,6 +1671,7 @@ function initVendas() {
   });
 
   itemsBox.addEventListener("input", renderTotal);
+  form.elements.desconto.addEventListener("input", renderTotal);
   form.elements.forma.addEventListener("change", renderTotal);
 
   itemsBox.addEventListener("click", (event) => {
@@ -1233,11 +1688,16 @@ function initVendas() {
       message.textContent = "Confira a data (DD/MM/AAAA).";
       return;
     }
-    if (itens.length === 0 || itens.some((i) => !i.estoque_id || !(i.quantidade > 0) || !(i.preco >= 0))) {
-      message.textContent = "Confira peça, quantidade e preço de cada item.";
+    if (itens.length === 0 || itens.some((i) => !i.estoque_id || !Number.isInteger(i.quantidade) || i.quantidade < 1 || !(i.preco >= 0))) {
+      message.textContent = "Confira peça, quantidade (número inteiro) e preço de cada item.";
       return;
     }
-    const total = itens.reduce((sum, i) => sum + i.quantidade * i.preco, 0);
+    const desconto = discountPct();
+    if (form.elements.desconto.value !== "" && (num(form.elements.desconto.value) < 0 || num(form.elements.desconto.value) >= 100)) {
+      message.textContent = "O desconto precisa estar entre 0% e 99,9%.";
+      return;
+    }
+    const total = itens.reduce((sum, i) => sum + i.quantidade * finalPrice(i.preco, desconto), 0);
     if (!(total > 0)) {
       message.textContent = "O total da venda precisa ser maior que zero.";
       return;
@@ -1250,6 +1710,7 @@ function initVendas() {
       p_obs: form.elements.obs.value.trim(),
       p_itens: itens,
       p_parcelas: isCredit() ? Number(parcelasSelect.value) : 1,
+      p_desconto: desconto,
     });
     if (error) {
       message.textContent = `Não foi possível registrar a venda. ${error.message}`;
@@ -1257,6 +1718,7 @@ function initVendas() {
     }
     message.textContent = "Venda registrada.";
     form.elements.obs.value = "";
+    form.elements.desconto.value = "";
     parcelasSelect.value = "1";
     itemsBox.innerHTML = "";
     await refreshAll();
@@ -1269,7 +1731,8 @@ function initVendas() {
 
 const FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito", "Transferência", "Outro"];
 const CATEGORIAS = {
-  saida: ["Compra de peças", "Transporte (viagem)", "Energia", "Cápsulas", "Embalagens", "Marketing", "Aluguel", "Outras saídas"],
+  // "Compra de peças" e "Transporte (viagem)" são lançados sozinhos ao cadastrar peças e viagens.
+  saida: ["Energia", "Cápsulas", "Embalagens", "Marketing", "Aluguel", "Outras saídas"],
   entrada: ["Venda", "Outras entradas"],
 };
 
@@ -1295,6 +1758,7 @@ function initFinance() {
   const chart = document.getElementById("finance-chart");
   const compare = document.getElementById("finance-compare");
   const list = document.getElementById("finance-list");
+  const profitBox = document.getElementById("finance-profit");
 
   monthInput.value = monthKey(todayISO());
   form.elements.data.value = todayBR();
@@ -1318,6 +1782,7 @@ function initFinance() {
   function renderFinance() {
     const key = monthInput.value || monthKey(todayISO());
     const all = cache.lancamentos;
+    profitBox.innerHTML = profitBlockHtml(profitSummary((d) => monthKey(d) === key), "Custos e lucro do mês");
 
     const saldoTotal = sumByTipo(all, "entrada") - sumByTipo(all, "saida");
     const doMes = all.filter((l) => monthKey(l.data) === key);
@@ -1372,11 +1837,11 @@ function initFinance() {
         <tr>
           <td>${formatDate(l.data)}</td>
           <td class="${l.tipo === "entrada" ? "tag-in" : "tag-out"}">${l.tipo === "entrada" ? "Entrada" : "Saída"}</td>
-          <td>${escapeHtml(l.categoria)}</td>
+          <td>${escapeHtml(l.categoria)}${l.origem !== "manual" ? ' <span class="badge">automático</span>' : ""}</td>
           <td>${escapeHtml(l.descricao || "—")}</td>
           <td>${escapeHtml(l.forma || "—")}</td>
           <td>${brl.format(l.valor)}</td>
-          <td><button class="link-btn" data-remove="${l.id}" type="button">Remover</button></td>
+          <td>${l.origem === "manual" ? `<button class="link-btn" data-remove="${l.id}" type="button">Remover</button>` : '<span class="muted small" title="Lançado pelo sistema. Para corrigir, desfaça a venda ou remova a peça ou a viagem.">—</span>'}</td>
         </tr>`)
       .join("");
     list.innerHTML = `
@@ -1481,18 +1946,20 @@ const EXPORTS = {
   financeiro: () =>
     downloadCsv(
       "financeiro",
-      ["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor"],
+      ["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor", "Origem"],
       cache.lancamentos.map((l) => [
         formatDate(l.data), l.tipo === "entrada" ? "Entrada" : "Saída", l.categoria, l.descricao, l.forma, csvNumber(l.valor),
+        l.origem === "manual" ? "Manual" : "Automático",
       ])
     ),
   estoque: () =>
     downloadCsv(
       "estoque",
-      ["Código", "Nome", "Fornecedor", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
+      ["Código", "Nome", "Fornecedor", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda", "Lucro por peça", "Lucro sobre o custo (%)"],
       cache.estoque.map((p) => [
         p.codigo, p.nome, fornecedorDe(p), p.categoria, p.tamanho, p.cor, p.quantidade,
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
+        csvNumber(round2(p.precoVenda - p.custoTotal)), p.custoTotal > 0 ? csvNumber(round2(((p.precoVenda - p.custoTotal) / p.custoTotal) * 100)) : "",
       ])
     ),
   fornecedores: () =>
@@ -1510,11 +1977,15 @@ const EXPORTS = {
   viagens: () =>
     downloadCsv(
       "viagens",
-      ["Data", "Km", "Consumo (km/L)", "Combustível", "Preço por litro", "Pedágio", "Peças", "Custo da viagem", "Custo por peça"],
-      cache.viagens.map((t) => [
-        formatDate(t.data), t.km, csvNumber(t.consumo), t.tipoCombustivel, csvNumber(t.preco),
-        csvNumber(t.pedagio), t.pecas, csvNumber(t.total), csvNumber(t.porPeca),
-      ])
+      ["Data", "Lojas", "Trajeto", "Paradas", "Km", "Consumo (km/L)", "Combustível", "Preço por litro", "Pedágio", "Peças previstas", "Custo da viagem", "Custo por peça", "Investido (viagem + produtos)", "Já vendido", "Lucro projetado"],
+      cache.viagens.map((t) => {
+        const s = tripStats(t);
+        const paradas = t.trajetoDetalhe && Number.isInteger(t.trajetoDetalhe.paradas) ? t.trajetoDetalhe.paradas : "";
+        return [
+          formatDate(t.data), lojasTexto(t) === "—" ? "" : lojasTexto(t), t.trajeto, paradas, t.km, csvNumber(t.consumo), t.tipoCombustivel, csvNumber(t.preco),
+          csvNumber(t.pedagio), t.pecas, csvNumber(t.total), csvNumber(t.porPeca), csvNumber(round2(s.investido)), csvNumber(round2(s.vendido)), csvNumber(round2(s.lucroProjetado)),
+        ];
+      })
     ),
 };
 
@@ -1641,7 +2112,7 @@ function buildReport(from, to) {
 
   return {
     from, to, vendas, ativas, itens, lancamentos, clientes, porForma, saidasPorCategoria, nomeCliente,
-    fornecedores, comprasFornecedor,
+    fornecedores, comprasFornecedor, lucros: profitSummary(inRange),
     totais: {
       faturamento, pecas, custo, lucro,
       ticket: ativas.length ? faturamento / ativas.length : 0,
@@ -1654,19 +2125,27 @@ function buildReport(from, to) {
 // Linhas do resumo, usadas no Excel e no PDF.
 function summaryRows(r) {
   const t = r.totais;
+  const l = r.lucros;
   const rows = [
     { section: "Vendas" },
     { label: "Número de vendas", value: r.ativas.length, type: "int" },
     { label: "Peças vendidas", value: t.pecas, type: "int" },
     { label: "Faturamento", value: t.faturamento, type: "money" },
     { label: "Ticket médio", value: t.ticket, type: "money" },
-    { label: "Custo das peças vendidas", value: t.custo, type: "money" },
-    { label: "Lucro bruto", value: t.lucro, type: "money" },
-    { label: "Margem bruta", value: t.margem, type: "pct" },
+    { section: "Custos e lucro" },
+    { label: "Faturamento", value: l.faturamento, type: "money" },
+    { label: "Custo das peças vendidas (produto + transporte)", value: l.custoVendido, type: "money" },
+    { label: "Lucro bruto", value: l.lucroBruto, type: "money" },
+    { label: "Margem bruta (sobre a venda)", value: l.margem / 100, type: "pct" },
+    { label: "Lucro sobre o custo", value: l.markup / 100, type: "pct" },
+    { label: "Despesas lançadas (energia, cápsulas...)", value: l.despesas, type: "money" },
+    { label: "Lucro líquido", value: l.lucroLiquido, type: "money" },
     { section: "Financeiro (caixa)" },
+    { label: "Compras de peças", value: l.comprasPecas, type: "money" },
+    { label: "Transporte das viagens", value: l.transporte, type: "money" },
     { label: "Entradas", value: t.entradas, type: "money" },
     { label: "Saídas", value: t.saidas, type: "money" },
-    { label: "Resultado", value: t.resultado, type: "money" },
+    { label: "Resultado do caixa", value: t.resultado, type: "money" },
     { section: "Vendas por forma de pagamento" },
   ];
   if (r.porForma.length === 0) rows.push({ label: "Sem vendas no período", value: "", type: "text" });
@@ -1955,15 +2434,7 @@ function initRelatorios() {
       .map((g) => `${escapeHtml(g.nome)} <strong>${moneyText(g.valorComprado)} · ${g.comprado} peça(s)</strong>`);
 
     preview.innerHTML = `
-      <div class="kpis">
-        ${kpi("Faturamento", moneyText(t.faturamento))}
-        ${kpi("Lucro bruto", moneyText(t.lucro), t.lucro < 0)}
-        ${kpi("Peças vendidas", String(t.pecas))}
-        ${kpi("Ticket médio", moneyText(t.ticket))}
-        ${kpi("Entradas (caixa)", moneyText(t.entradas))}
-        ${kpi("Saídas (caixa)", moneyText(t.saidas))}
-        ${kpi("Resultado (caixa)", moneyText(t.resultado), t.resultado < 0)}
-      </div>
+      ${profitBlockHtml(r.lucros, "Custos e lucro do período")}
       <div class="panel-grid">
         ${listCard("Vendas por forma de pagamento", r.porForma.map(([f, v]) => `${escapeHtml(f)} <strong>${moneyText(v)}</strong>`), "Sem vendas no período.")}
         ${listCard("Saídas por categoria", r.saidasPorCategoria.map(([c, v]) => `${escapeHtml(c)} <strong>${moneyText(v)}</strong>`), "Sem saídas no período.")}
@@ -2078,12 +2549,21 @@ function initPainel() {
       .slice(0, 5)
       .map(({ c, total }) => `${escapeHtml(c.nome)} <strong>${brl.format(total)}</strong>`);
 
+    const unidades = pecas;
+    const custoEstoque = cache.estoque.reduce((sum, p) => sum + p.quantidade * p.custoTotal, 0);
+    const vendaEstoque = cache.estoque.reduce((sum, p) => sum + p.quantidade * p.precoVenda, 0);
+
     root.innerHTML = `
-      <div class="kpis">
-        ${kpi("Faturamento do mês", brl.format(faturamento))}
-        ${kpi("Lucro bruto do mês", brl.format(lucro), lucro < 0)}
-        ${kpi("Ticket médio", brl.format(ticket))}
-        ${kpi("Peças em estoque", String(pecas))}
+      ${profitBlockHtml(profitSummary((d) => monthKey(d) === key), "Custos e lucro do mês")}
+      <div class="profit-block">
+        <h2>Estoque agora</h2>
+        <div class="kpis">
+          ${kpiCard("Peças em estoque", String(unidades), { sub: `${cache.estoque.length} item(ns) diferente(s)` })}
+          ${kpiCard("Custo do estoque", moneyText(custoEstoque), { sub: "investido nas peças que ainda não venderam", tone: "cost" })}
+          ${kpiCard("Valor de venda do estoque", moneyText(vendaEstoque))}
+          ${kpiCard("Lucro potencial", moneyText(vendaEstoque - custoEstoque), { sub: custoEstoque > 0 ? `${pct(((vendaEstoque - custoEstoque) / custoEstoque) * 100)} sobre o custo` : "", tone: "profit", negative: vendaEstoque - custoEstoque < 0 })}
+          ${kpiCard("Ticket médio do mês", moneyText(ticket))}
+        </div>
       </div>
       <div class="panel-grid">
         ${listCard("Estoque baixo", baixo, "Nenhuma peça com estoque baixo.")}

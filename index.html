@@ -59,9 +59,17 @@
               <input type="text" name="data" placeholder="DD/MM/AAAA" inputmode="numeric" maxlength="10" required>
             </label>
 
-            <label>Trajeto
-              <input type="text" name="trajeto" value="Sorocaba → Piedade → São Paulo → Sorocaba" readonly>
-            </label>
+            <fieldset class="consent route-box">
+              <legend>Trajeto</legend>
+              <div id="route-points"></div>
+              <div class="route-actions">
+                <button type="button" class="link-btn" id="route-add-stop">+ Adicionar parada</button>
+                <button type="button" class="btn secondary" id="route-calc">Calcular rota e km</button>
+              </div>
+              <label class="check"><input type="checkbox" id="route-return" checked> Volta ao ponto de partida</label>
+              <p id="route-message" class="muted small" aria-live="polite">Edite os pontos (cidade com a sigla do estado, como "Piedade, SP", ou um endereço) e clique em Calcular rota: o sistema acha o caminho de carro e preenche os km, trecho por trecho.</p>
+              <div id="route-legs" class="table-wrap"></div>
+            </fieldset>
 
             <div class="row">
               <label>Km ida e volta
@@ -115,7 +123,8 @@
           </form>
 
           <div class="card">
-            <h2>Histórico</h2>
+            <h2>Histórico e custos das viagens</h2>
+            <div id="trip-kpis" class="kpis"></div>
             <div id="trip-list" class="table-wrap">
               <p class="muted">Nenhuma viagem registrada ainda.</p>
             </div>
@@ -184,9 +193,15 @@
               <p class="muted">Informe o custo do produto para ver o preço sugerido.</p>
             </div>
 
-            <label>Preço de venda (R$)
-              <input type="number" name="precoVenda" min="0" step="0.01" placeholder="Ex.: 13,00">
-            </label>
+            <div class="row">
+              <label>Lucro desejado (%)
+                <input type="number" name="margem" min="0" step="0.1" placeholder="Ex.: 60">
+              </label>
+              <label>Preço de venda (R$)
+                <input type="number" name="precoVenda" min="0" step="0.01" placeholder="Ex.: 13,00">
+              </label>
+            </div>
+            <p class="muted small">Digite o lucro desejado e o sistema calcula o preço final (custo total + o %). Se preferir, digite o preço e ele mostra o lucro.</p>
 
             <div class="actions">
               <button type="submit" class="btn">Salvar peça</button>
@@ -196,6 +211,7 @@
 
           <div class="card">
             <h2>Peças em estoque</h2>
+            <div id="stock-summary" class="kpis"></div>
             <input type="search" id="stock-search" placeholder="Buscar por código, nome, fornecedor ou cor">
             <div id="stock-list" class="table-wrap">
               <p class="muted">Nenhuma peça cadastrada ainda.</p>
@@ -381,10 +397,15 @@
               <input type="text" name="obs">
             </label>
 
+            <label>Desconto (%)
+              <input type="number" name="desconto" min="0" max="99.9" step="0.1" placeholder="0">
+            </label>
+
             <div class="sale-total">
               <span>Total da venda</span>
               <strong id="sale-total">R$ 0,00</strong>
             </div>
+            <div id="sale-breakdown" class="sale-breakdown" aria-live="polite"></div>
 
             <div class="actions">
               <button type="submit" class="btn">Registrar venda</button>
@@ -411,6 +432,8 @@
             <input type="month" id="finance-month">
           </label>
         </div>
+
+        <div id="finance-profit"></div>
 
         <div class="kpis">
           <div class="card kpi"><span class="muted small">Saldo em caixa (total)</span><strong id="kpi-saldo">—</strong></div>
@@ -514,6 +537,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=19"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

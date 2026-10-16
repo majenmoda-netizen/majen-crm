@@ -416,6 +416,66 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 
 .list-card { margin-top: 24px; }
 
+/* Custos e lucro em destaque */
+.profit-block { margin-bottom: 24px; }
+.profit-block h2 { color: var(--rose-dark); font-size: 18px; margin: 0 0 12px; }
+.profit-block .kpis { margin: 0 0 14px; }
+
+.kpi-sub { color: var(--muted); font-size: 12px; line-height: 1.3; }
+
+.kpi.profit {
+  background: var(--blush);
+  border-color: var(--champagne);
+}
+
+.kpi.cost { border-left: 4px solid var(--champagne); }
+.kpi.profit strong { color: var(--rose-dark); }
+.kpi.profit strong.neg, .kpi strong.neg { color: #9B3D3D; }
+
+.badge {
+  display: inline-block;
+  background: var(--blush);
+  color: var(--rose-dark);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.warn { color: #9B3D3D; font-weight: 600; margin: 8px 0 0; }
+.preview .line.bad { color: #9B3D3D; }
+
+.sale-breakdown {
+  background: var(--off-white);
+  border: 1px solid var(--blush);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: -6px 0 16px;
+  font-size: 14px;
+}
+
+.sale-breakdown:empty { display: none; }
+.sale-breakdown .line { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.sale-breakdown .line.total { border-top: 1px solid var(--champagne); margin-top: 6px; padding-top: 8px; color: var(--rose-dark); }
+.sale-breakdown .line.bad { color: #9B3D3D; }
+
+/* Trajeto da viagem */
+.route-box { padding-bottom: 8px; }
+.route-point {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.route-point input { margin-top: 0; }
+.route-label { font-size: 13px; color: var(--muted); }
+.route-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 4px 0 10px; }
+.route-actions .btn { padding: 8px 14px; }
+#route-legs table { margin-top: 8px; }
+#route-legs .total-row td { font-weight: 600; color: var(--rose-dark); }
+
 .period-row {
   display: flex;
   flex-wrap: wrap;
