@@ -152,6 +152,7 @@ const stockFromRow = (r) => ({
   tamanho: r.tamanho || "",
   cor: r.cor || "",
   codigo: r.codigo || "",
+  criadoEm: (r.created_at || "").slice(0, 10),
   fornecedorId: r.fornecedor_id || null,
   fornecedorTexto: r.fornecedor || "",
   quantidade: num(r.quantidade),
@@ -1494,6 +1495,18 @@ const EXPORTS = {
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
       ])
     ),
+  fornecedores: () =>
+    downloadCsv(
+      "fornecedores",
+      ["Fornecedor", "Cidade", "Telefone", "Contato", "Site ou Instagram", "O que vendem", "Viagens", "Peças compradas", "Valor comprado", "Em estoque", "Peças vendidas", "Faturamento", "Lucro bruto"],
+      cache.fornecedores.map((f) => {
+        const s = supplierStats(f);
+        return [
+          f.nome, f.cidade, f.telefone, f.contato, f.site, f.categorias, s.viagens.length,
+          s.comprado, csvNumber(s.valorComprado), s.emEstoque, s.vendidas, csvNumber(s.faturamento), csvNumber(s.lucro),
+        ];
+      })
+    ),
   viagens: () =>
     downloadCsv(
       "viagens",
@@ -1576,8 +1589,59 @@ function buildReport(from, to) {
     })
     .sort((a, b) => b.totalPeriodo - a.totalPeriodo || a.cliente.nome.localeCompare(b.cliente.nome, "pt-BR"));
 
+  // Fornecedores: compras (peças que entraram no estoque no período) e vendas do período dessas peças.
+  const pecasPeriodo = cache.estoque.filter((p) => !p.criadoEm || inRange(p.criadoEm));
+  const nomeFornecedor = (p) => fornecedorDe(p) || "Sem fornecedor";
+  const grupos = new Map();
+  const grupo = (nome) => {
+    if (!grupos.has(nome)) {
+      grupos.set(nome, { nome, fornecedor: null, viagens: 0, comprado: 0, valorComprado: 0, emEstoque: 0, vendidas: 0, faturamento: 0, lucro: 0 });
+    }
+    return grupos.get(nome);
+  };
+  cache.fornecedores.forEach((f) => {
+    const g = grupo(f.nome);
+    g.fornecedor = f;
+    g.viagens = cache.viagens.filter((t) => inRange(t.data) && t.fornecedorIds.includes(f.id)).length;
+  });
+  pecasPeriodo.forEach((p) => {
+    const g = grupo(nomeFornecedor(p));
+    g.comprado += p.quantidadeInicial;
+    g.valorComprado += p.quantidadeInicial * p.custoProduto;
+  });
+  cache.estoque.forEach((p) => {
+    grupo(nomeFornecedor(p)).emEstoque += p.quantidade;
+  });
+  const donoDaPeca = new Map(cache.estoque.map((p) => [p.id, nomeFornecedor(p)]));
+  ativas.forEach((v) =>
+    v.itens.forEach((i) => {
+      const g = grupo(donoDaPeca.get(i.estoqueId) || "Sem fornecedor");
+      g.vendidas += i.quantidade;
+      g.faturamento += i.quantidade * i.preco;
+      g.lucro += i.quantidade * (i.preco - i.custo);
+    })
+  );
+  const fornecedores = [...grupos.values()]
+    .filter((g) => g.fornecedor || g.comprado || g.vendidas || g.emEstoque)
+    .sort((a, b) => b.valorComprado - a.valorComprado || a.nome.localeCompare(b.nome, "pt-BR"));
+  const comprasFornecedor = pecasPeriodo
+    .map((p) => ({
+      fornecedor: nomeFornecedor(p),
+      data: p.criadoEm,
+      codigo: p.codigo,
+      peca: p.nome,
+      tamanho: p.tamanho,
+      cor: p.cor,
+      comprada: p.quantidadeInicial,
+      custo: p.custoProduto,
+      valor: p.quantidadeInicial * p.custoProduto,
+      emEstoque: p.quantidade,
+    }))
+    .sort((a, b) => a.fornecedor.localeCompare(b.fornecedor, "pt-BR") || a.peca.localeCompare(b.peca, "pt-BR"));
+
   return {
     from, to, vendas, ativas, itens, lancamentos, clientes, porForma, saidasPorCategoria, nomeCliente,
+    fornecedores, comprasFornecedor,
     totais: {
       faturamento, pecas, custo, lucro,
       ticket: ativas.length ? faturamento / ativas.length : 0,
@@ -1610,6 +1674,10 @@ function summaryRows(r) {
   rows.push({ section: "Saídas por categoria" });
   if (r.saidasPorCategoria.length === 0) rows.push({ label: "Sem saídas no período", value: "", type: "text" });
   r.saidasPorCategoria.forEach(([cat, valor]) => rows.push({ label: cat, value: valor, type: "money" }));
+  rows.push({ section: "Compras por fornecedor (valor em produtos)" });
+  const comprasPorFornecedor = r.fornecedores.filter((g) => g.valorComprado > 0);
+  if (comprasPorFornecedor.length === 0) rows.push({ label: "Sem compras no período", value: "", type: "text" });
+  comprasPorFornecedor.forEach((g) => rows.push({ label: g.nome, value: g.valorComprado, type: "money" }));
   return rows;
 }
 
@@ -1682,6 +1750,27 @@ function exportExcel(r) {
     ),
     [28, 16, 12, 16, 16, 16, 20, 16, 16, 18, 16, 16, 16, 14],
     [11, 12]
+  );
+
+  addSheet(
+    "Fornecedores",
+    [["Fornecedor", "Cidade", "Telefone", "Viagens no período", "Peças compradas", "Valor comprado", "Em estoque agora", "Peças vendidas", "Faturamento", "Lucro bruto"]].concat(
+      r.fornecedores.map((g) => [
+        g.nome, g.fornecedor ? g.fornecedor.cidade : "", g.fornecedor ? g.fornecedor.telefone : "",
+        g.viagens, g.comprado, g.valorComprado, g.emEstoque, g.vendidas, g.faturamento, g.lucro,
+      ])
+    ),
+    [28, 16, 16, 18, 16, 16, 16, 14, 14, 14],
+    [5, 8, 9]
+  );
+
+  addSheet(
+    "Compras por fornecedor",
+    [["Fornecedor", "Data", "Código", "Peça", "Tamanho", "Cor", "Quantidade comprada", "Custo unitário", "Valor comprado", "No estoque agora"]].concat(
+      r.comprasFornecedor.map((c) => [c.fornecedor, formatDate(c.data), c.codigo, c.peca, c.tamanho, c.cor, c.comprada, c.custo, c.valor, c.emEstoque])
+    ),
+    [28, 12, 14, 30, 10, 12, 18, 14, 16, 16],
+    [7, 8]
   );
 
   addSheet(
@@ -1769,6 +1858,25 @@ function exportPdf(r) {
   );
 
   section(
+    "Fornecedores",
+    ["Fornecedor", "Cidade", "Viagens", "Peças compradas", "Valor comprado", "No estoque", "Vendidas", "Faturamento", "Lucro bruto"],
+    r.fornecedores.map((g) => [
+      g.nome, g.fornecedor ? g.fornecedor.cidade || "—" : "—", String(g.viagens), String(g.comprado), moneyText(g.valorComprado),
+      String(g.emEstoque), String(g.vendidas), moneyText(g.faturamento), moneyText(g.lucro),
+    ]),
+    { 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" } }
+  );
+
+  section(
+    "Compras por fornecedor (peças)",
+    ["Fornecedor", "Data", "Cód.", "Peça", "Tam.", "Cor", "Qtd comprada", "Custo unit.", "Valor", "No estoque"],
+    r.comprasFornecedor.map((c) => [
+      c.fornecedor, formatDate(c.data), c.codigo || "—", c.peca, c.tamanho, c.cor, String(c.comprada), moneyText(c.custo), moneyText(c.valor), String(c.emEstoque),
+    ]),
+    { 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" }, 9: { halign: "right" } }
+  );
+
+  section(
     "Financeiro (entradas e saídas)",
     ["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor"],
     r.lancamentos.map((l) => [
@@ -1841,6 +1949,11 @@ function initRelatorios() {
       .slice(0, 5)
       .map((x) => `${escapeHtml(x.cliente.nome)} <strong>${moneyText(x.totalPeriodo)} · ${x.pecas} peça(s)</strong>`);
 
+    const comprasFornecedores = r.fornecedores
+      .filter((g) => g.valorComprado > 0)
+      .slice(0, 5)
+      .map((g) => `${escapeHtml(g.nome)} <strong>${moneyText(g.valorComprado)} · ${g.comprado} peça(s)</strong>`);
+
     preview.innerHTML = `
       <div class="kpis">
         ${kpi("Faturamento", moneyText(t.faturamento))}
@@ -1855,6 +1968,7 @@ function initRelatorios() {
         ${listCard("Vendas por forma de pagamento", r.porForma.map(([f, v]) => `${escapeHtml(f)} <strong>${moneyText(v)}</strong>`), "Sem vendas no período.")}
         ${listCard("Saídas por categoria", r.saidasPorCategoria.map(([c, v]) => `${escapeHtml(c)} <strong>${moneyText(v)}</strong>`), "Sem saídas no período.")}
         ${listCard("Maiores clientes do período", topClientes, "Sem compras de clientes no período.")}
+        ${listCard("Compras por fornecedor", comprasFornecedores, "Sem compras de fornecedores no período.")}
       </div>`;
   }
 
@@ -1985,6 +2099,7 @@ function initPainel() {
           <button type="button" class="btn secondary" data-export="vendas">Vendas</button>
           <button type="button" class="btn secondary" data-export="financeiro">Financeiro</button>
           <button type="button" class="btn secondary" data-export="estoque">Estoque</button>
+          <button type="button" class="btn secondary" data-export="fornecedores">Fornecedores</button>
           <button type="button" class="btn secondary" data-export="viagens">Viagens</button>
         </div>
       </div>`;
