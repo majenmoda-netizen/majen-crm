@@ -1,5 +1,5 @@
 // Navegação simples entre as telas, usando o hash da URL (#viagens, #estoque...).
-const ROUTES = ["painel", "viagens", "estoque", "vendas", "clientes", "financeiro", "relatorios"];
+const ROUTES = ["painel", "viagens", "estoque", "fornecedores", "vendas", "clientes", "financeiro", "relatorios"];
 
 function showRoute() {
   const hash = window.location.hash.replace("#", "");
@@ -56,6 +56,14 @@ function escapeHtml(value) {
 
 // Forma de pagamento com as parcelas, quando houver (ex.: "Cartão de crédito (3x)").
 const formaVenda = (v) => (v.parcelas > 1 ? `${v.forma} (${v.parcelas}x)` : v.forma);
+
+// Nome do fornecedor pelo id; peças antigas podem ter só o nome digitado em texto.
+const fornecedorNome = (id) => {
+  const f = cache.fornecedores.find((x) => x.id === id);
+  return f ? f.nome : "";
+};
+const fornecedorDe = (p) => fornecedorNome(p.fornecedorId) || p.fornecedorTexto || "";
+const lojasTexto = (t) => t.fornecedorIds.map(fornecedorNome).filter(Boolean).join(", ") || "—";
 
 // Cálculo da viagem: litros = km ÷ consumo; combustível = litros × preço;
 // custo por peça = (combustível + pedágio) ÷ peças.
@@ -117,7 +125,7 @@ const db = config.supabaseUrl && config.supabaseAnonKey && window.supabase
   : null;
 
 // Cópia local dos dados, carregada do banco depois do login.
-const cache = { viagens: [], estoque: [], clientes: [], lancamentos: [], vendas: [] };
+const cache = { viagens: [], estoque: [], clientes: [], lancamentos: [], vendas: [], fornecedores: [] };
 const renderers = [];
 
 const tripFromRow = (r) => ({
@@ -134,6 +142,7 @@ const tripFromRow = (r) => ({
   total: num(r.total),
   porPeca: num(r.por_peca),
   obs: r.obs || "",
+  fornecedorIds: [],
 });
 
 const stockFromRow = (r) => ({
@@ -143,8 +152,10 @@ const stockFromRow = (r) => ({
   tamanho: r.tamanho || "",
   cor: r.cor || "",
   codigo: r.codigo || "",
-  fornecedor: r.fornecedor || "",
+  fornecedorId: r.fornecedor_id || null,
+  fornecedorTexto: r.fornecedor || "",
   quantidade: num(r.quantidade),
+  quantidadeInicial: num(r.quantidade_inicial ?? r.quantidade),
   viagemId: r.viagem_id,
   custoProduto: num(r.custo_produto),
   custoTransporte: num(r.custo_transporte),
@@ -169,6 +180,18 @@ const clientFromRow = (r) => ({
   compras: (r.compras || [])
     .map((c) => ({ id: c.id, data: c.data, valor: num(c.valor), descricao: c.descricao || "" }))
     .sort((a, b) => (a.data < b.data ? -1 : 1)),
+});
+
+const fornecedorFromRow = (r) => ({
+  id: r.id,
+  nome: r.nome,
+  cidade: r.cidade || "",
+  endereco: r.endereco || "",
+  contato: r.contato || "",
+  telefone: r.telefone || "",
+  site: r.site || "",
+  categorias: r.categorias || "",
+  obs: r.obs || "",
 });
 
 const lancamentoFromRow = (r) => ({
@@ -218,6 +241,18 @@ async function loadAll() {
     .order("data", { ascending: false })
     .order("created_at", { ascending: false });
   cache.vendas = vendas.error ? [] : vendas.data.map(vendaFromRow);
+
+  // Fornecedores e lojas das viagens também são carregados à parte, pelo mesmo motivo.
+  const fornecedores = await db.from("fornecedores").select("*").order("nome");
+  cache.fornecedores = fornecedores.error ? [] : fornecedores.data.map(fornecedorFromRow);
+  const links = await db.from("viagem_fornecedores").select("*");
+  const porViagem = {};
+  (links.error ? [] : links.data).forEach((l) => {
+    (porViagem[l.viagem_id] = porViagem[l.viagem_id] || []).push(l.fornecedor_id);
+  });
+  cache.viagens.forEach((t) => {
+    t.fornecedorIds = porViagem[t.id] || [];
+  });
 }
 
 async function refreshAll() {
@@ -239,6 +274,7 @@ function initTrips() {
   const preview = document.getElementById("trip-preview");
   const message = document.getElementById("trip-message");
   const list = document.getElementById("trip-list");
+  const storesBox = document.getElementById("trip-stores");
   form.elements.data.value = todayBR();
   maskDateBR(form.elements.data);
 
@@ -282,6 +318,7 @@ function initTrips() {
       .map((t) => `
         <tr>
           <td>${formatDate(t.data)}</td>
+          <td>${escapeHtml(lojasTexto(t))}</td>
           <td>${t.km} km</td>
           <td>${brl.format(t.preco)}/L</td>
           <td>${t.pecas}</td>
@@ -293,7 +330,7 @@ function initTrips() {
     list.innerHTML = `
       <table>
         <thead>
-          <tr><th>Data</th><th>Km</th><th>Combustível</th><th>Peças</th><th>Custo viagem</th><th>Por peça</th><th></th></tr>
+          <tr><th>Data</th><th>Lojas</th><th>Km</th><th>Combustível</th><th>Peças</th><th>Custo viagem</th><th>Por peça</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -310,7 +347,7 @@ function initTrips() {
       return;
     }
     const r = calculateTrip(values);
-    const { error } = await db.from("viagens").insert({
+    const { data: saved, error } = await db.from("viagens").insert({
       data: dataIso,
       km: values.km,
       consumo: values.consumo,
@@ -323,11 +360,25 @@ function initTrips() {
       total: r.total,
       por_peca: r.porPeca,
       obs: form.elements.obs.value.trim() || null,
-    });
+    }).select("id").single();
     if (error) {
       message.textContent = friendlyError(error);
       return;
     }
+    const lojas = [...storesBox.querySelectorAll("input:checked")].map((input) => input.value);
+    if (lojas.length > 0) {
+      const { error: linkError } = await db
+        .from("viagem_fornecedores")
+        .insert(lojas.map((id) => ({ viagem_id: saved.id, fornecedor_id: id })));
+      if (linkError) {
+        message.textContent = `Viagem salva, mas as lojas não foram registradas. ${linkError.message}`;
+        await refreshAll();
+        return;
+      }
+    }
+    storesBox.querySelectorAll("input:checked").forEach((input) => {
+      input.checked = false;
+    });
     message.textContent = "Viagem salva.";
     form.elements.pecas.value = "";
     form.elements.obs.value = "";
@@ -347,7 +398,18 @@ function initTrips() {
     await refreshAll();
   });
 
+  // Lojas cadastradas na aba Fornecedores, para marcar onde a viagem passou. Mantém as marcações ao atualizar.
+  function renderStores() {
+    const marcadas = new Set([...storesBox.querySelectorAll("input:checked")].map((input) => input.value));
+    storesBox.innerHTML = cache.fornecedores.length
+      ? cache.fornecedores
+          .map((f) => `<label class="check"><input type="checkbox" value="${f.id}" ${marcadas.has(f.id) ? "checked" : ""}> ${escapeHtml(f.nome)}</label>`)
+          .join("")
+      : '<p class="muted small">Cadastre os fornecedores na aba Fornecedores.</p>';
+  }
+
   renderers.push(renderList);
+  renderers.push(renderStores);
   renderPreview();
 }
 
@@ -368,7 +430,7 @@ function initStock() {
   function fillTrips() {
     const previous = tripSelect.value;
     const options = cache.viagens
-      .map((t) => `<option value="${t.id}">${formatDate(t.data)} · ${brl.format(t.porPeca)} por peça</option>`)
+      .map((t) => `<option value="${t.id}">${formatDate(t.data)}${t.fornecedorIds.length ? ` · ${escapeHtml(lojasTexto(t))}` : ""} · ${brl.format(t.porPeca)} por peça</option>`)
       .join("");
     tripSelect.innerHTML = `<option value="">Sem viagem (custo só do produto)</option>${options}`;
     tripSelect.value = previous;
@@ -399,10 +461,14 @@ function initStock() {
     }
   }
 
-  // Sugere os fornecedores já usados, para não digitar o mesmo nome de formas diferentes.
+  // Fornecedores cadastrados na aba Fornecedores; mantém a escolha atual ao atualizar.
   function fillSuppliers() {
-    const nomes = [...new Set(cache.estoque.map((p) => p.fornecedor).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
-    document.getElementById("stock-suppliers").innerHTML = nomes.map((n) => `<option value="${escapeHtml(n)}"></option>`).join("");
+    const select = form.elements.fornecedorId;
+    const previous = select.value;
+    select.innerHTML = `<option value="">Sem fornecedor</option>${cache.fornecedores
+      .map((f) => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`)
+      .join("")}`;
+    select.value = previous;
   }
 
   function renderList() {
@@ -410,7 +476,7 @@ function initStock() {
     fillSuppliers();
     const term = search.value.trim().toLowerCase();
     const items = cache.estoque.filter(
-      (p) => !term || [p.codigo, p.nome, p.fornecedor, p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
+      (p) => !term || [p.codigo, p.nome, fornecedorDe(p), p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
     );
     if (items.length === 0) {
       list.innerHTML = `<p class="muted">${term ? "Nenhuma peça encontrada." : "Nenhuma peça cadastrada ainda."}</p>`;
@@ -422,7 +488,7 @@ function initStock() {
           <td>${item.foto ? `<img class="thumb" src="${item.foto}" alt="">` : "—"}</td>
           <td>${escapeHtml(item.codigo || "—")}</td>
           <td>${escapeHtml(item.nome)}</td>
-          <td>${escapeHtml(item.fornecedor || "—")}</td>
+          <td>${escapeHtml(fornecedorDe(item) || "—")}</td>
           <td>${item.categoria}</td>
           <td>${escapeHtml(item.tamanho || "—")}</td>
           <td>${escapeHtml(item.cor || "—")}</td>
@@ -459,7 +525,14 @@ function initStock() {
   });
 
   form.addEventListener("input", renderPreview);
-  tripSelect.addEventListener("change", renderPreview);
+  tripSelect.addEventListener("change", () => {
+    // Se a viagem passou numa loja só e o fornecedor ainda está em branco, já sugere essa loja.
+    const trip = cache.viagens.find((t) => t.id === tripSelect.value);
+    if (trip && trip.fornecedorIds.length === 1 && !form.elements.fornecedorId.value) {
+      form.elements.fornecedorId.value = trip.fornecedorIds[0];
+    }
+    renderPreview();
+  });
   search.addEventListener("input", renderList);
 
   form.addEventListener("submit", async (event) => {
@@ -475,7 +548,8 @@ function initStock() {
     const precoVenda = num(form.elements.precoVenda.value) || suggestPrice(c.total);
     const { error } = await db.from("estoque").insert({
       codigo: form.elements.codigo.value.trim() || null,
-      fornecedor: form.elements.fornecedor.value.trim() || null,
+      fornecedor_id: form.elements.fornecedorId.value || null,
+      quantidade_inicial: quantidade,
       nome,
       categoria: form.elements.categoria.value,
       tamanho: form.elements.tamanho.value.trim() || null,
@@ -724,6 +798,248 @@ function initClients() {
     if (event.target.dataset.close) {
       selectedId = null;
       renderDetail();
+    }
+  });
+
+  renderers.push(renderList);
+  renderers.push(renderDetail);
+}
+
+// ---------- Fornecedores ----------
+
+// Números de um fornecedor: o que foi comprado, o que ainda está no estoque e o que já rendeu em vendas.
+function supplierStats(fornecedor) {
+  const pecas = cache.estoque.filter((p) => p.fornecedorId === fornecedor.id);
+  const ids = new Set(pecas.map((p) => p.id));
+  let vendidas = 0;
+  let faturamento = 0;
+  let lucro = 0;
+  cache.vendas
+    .filter((v) => !v.estornada)
+    .forEach((v) =>
+      v.itens.forEach((i) => {
+        if (!ids.has(i.estoqueId)) return;
+        vendidas += i.quantidade;
+        faturamento += i.quantidade * i.preco;
+        lucro += i.quantidade * (i.preco - i.custo);
+      })
+    );
+  return {
+    pecas,
+    comprado: pecas.reduce((sum, p) => sum + p.quantidadeInicial, 0),
+    valorComprado: pecas.reduce((sum, p) => sum + p.quantidadeInicial * p.custoProduto, 0),
+    emEstoque: pecas.reduce((sum, p) => sum + p.quantidade, 0),
+    vendidas,
+    faturamento,
+    lucro,
+    viagens: cache.viagens
+      .filter((t) => t.fornecedorIds.includes(fornecedor.id))
+      .sort((a, b) => (a.data < b.data ? 1 : -1)),
+  };
+}
+
+function initFornecedores() {
+  const form = document.getElementById("supplier-form");
+  if (!form) return;
+
+  const message = document.getElementById("supplier-message");
+  const list = document.getElementById("supplier-list");
+  const search = document.getElementById("supplier-search");
+  const detail = document.getElementById("supplier-detail");
+  const title = document.getElementById("supplier-form-title");
+  const submitButton = document.getElementById("supplier-submit");
+  const cancelButton = document.getElementById("supplier-cancel");
+  let selectedId = null;
+  let editingId = null;
+
+  function setEditing(id) {
+    editingId = id;
+    const f = cache.fornecedores.find((x) => x.id === id);
+    title.textContent = f ? "Editar fornecedor" : "Novo fornecedor";
+    submitButton.textContent = f ? "Salvar alterações" : "Salvar fornecedor";
+    cancelButton.hidden = !f;
+    ["nome", "cidade", "telefone", "contato", "site", "endereco", "categorias", "obs"].forEach((name) => {
+      form.elements[name].value = f ? f[name] : "";
+    });
+  }
+
+  function renderList() {
+    const term = search.value.trim().toLowerCase();
+    const shown = cache.fornecedores.filter(
+      (f) => !term || [f.nome, f.cidade, f.categorias, f.contato].some((field) => (field || "").toLowerCase().includes(term))
+    );
+    if (shown.length === 0) {
+      list.innerHTML = `<p class="muted">${term ? "Nenhum fornecedor encontrado." : "Nenhum fornecedor cadastrado ainda."}</p>`;
+      return;
+    }
+    const rows = shown
+      .map((f) => {
+        const s = supplierStats(f);
+        const ultima = s.viagens.length ? formatDate(s.viagens[0].data) : "—";
+        return `
+          <tr>
+            <td>${escapeHtml(f.nome)}</td>
+            <td>${escapeHtml(f.cidade || "—")}</td>
+            <td>${escapeHtml(f.telefone || "—")}</td>
+            <td>${s.viagens.length}</td>
+            <td>${s.comprado}</td>
+            <td>${moneyText(s.valorComprado)}</td>
+            <td>${ultima}</td>
+            <td><button class="link-btn" data-open="${f.id}" type="button">Abrir</button></td>
+          </tr>`;
+      })
+      .join("");
+    list.innerHTML = `
+      <table>
+        <thead>
+          <tr><th>Nome</th><th>Cidade</th><th>Telefone</th><th>Viagens</th><th>Peças compradas</th><th>Valor comprado</th><th>Última visita</th><th></th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function renderDetail() {
+    const f = cache.fornecedores.find((x) => x.id === selectedId);
+    if (!f) {
+      detail.hidden = true;
+      detail.innerHTML = "";
+      return;
+    }
+    const s = supplierStats(f);
+    const kpi = (label, value) => `<div class="card kpi"><span class="muted small">${label}</span><strong>${value}</strong></div>`;
+
+    const viagens = s.viagens.length
+      ? s.viagens
+          .map((t) => {
+            const outras = t.fornecedorIds.filter((id) => id !== f.id).map(fornecedorNome).filter(Boolean).join(", ");
+            return `<tr><td>${formatDate(t.data)}</td><td>${t.km} km</td><td>${t.pecas}</td><td>${moneyText(t.total)}</td><td>${escapeHtml(outras || "—")}</td></tr>`;
+          })
+          .join("")
+      : '<tr><td colspan="5" class="muted">Nenhuma viagem registrada com este fornecedor.</td></tr>';
+
+    const pecas = s.pecas.length
+      ? s.pecas
+          .map(
+            (p) => `<tr>
+              <td>${escapeHtml(p.codigo || "—")}</td>
+              <td>${escapeHtml(p.nome)}</td>
+              <td>${p.quantidadeInicial}</td>
+              <td>${p.quantidade}</td>
+              <td>${moneyText(p.custoProduto)}</td>
+              <td>${moneyText(p.precoVenda)}</td>
+            </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="6" class="muted">Nenhuma peça comprada deste fornecedor.</td></tr>';
+
+    const dados = [
+      ["Cidade", f.cidade],
+      ["Telefone", f.telefone],
+      ["Contato", f.contato],
+      ["Site/Instagram", f.site],
+      ["Endereço", f.endereco],
+      ["Vendem", f.categorias],
+    ]
+      .filter(([, value]) => value)
+      .map(([label, value]) => `${label}: ${escapeHtml(value)}`)
+      .join(" · ");
+
+    detail.hidden = false;
+    detail.innerHTML = `
+      <div class="detail-head">
+        <h2>${escapeHtml(f.nome)}</h2>
+        <span>
+          <button class="link-btn" data-edit="${f.id}" type="button">Editar</button>
+          <button class="link-btn" data-close="1" type="button">Fechar</button>
+        </span>
+      </div>
+      <p class="muted small">${dados || "Sem dados de contato cadastrados."}</p>
+      ${f.obs ? `<p class="small">${escapeHtml(f.obs)}</p>` : ""}
+
+      <div class="kpis">
+        ${kpi("Peças compradas", String(s.comprado))}
+        ${kpi("Valor em produtos", moneyText(s.valorComprado))}
+        ${kpi("Em estoque agora", String(s.emEstoque))}
+        ${kpi("Peças vendidas", String(s.vendidas))}
+        ${kpi("Faturamento", moneyText(s.faturamento))}
+        ${kpi("Lucro bruto", moneyText(s.lucro))}
+      </div>
+
+      <h3>Viagens a este fornecedor</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Data</th><th>Km</th><th>Peças da viagem</th><th>Custo da viagem</th><th>Outras lojas</th></tr></thead>
+          <tbody>${viagens}</tbody>
+        </table>
+      </div>
+
+      <h3>Peças compradas</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Código</th><th>Peça</th><th>Comprada</th><th>No estoque</th><th>Custo unit.</th><th>Venda</th></tr></thead>
+          <tbody>${pecas}</tbody>
+        </table>
+      </div>
+      <p class="muted small">Valor em produtos = quantidade comprada × custo do produto, sem o transporte da viagem.</p>`;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const nome = form.elements.nome.value.trim();
+    if (!nome) {
+      message.textContent = "Informe o nome do fornecedor.";
+      return;
+    }
+    const repetido = cache.fornecedores.find((f) => f.nome.toLowerCase() === nome.toLowerCase() && f.id !== editingId);
+    if (repetido) {
+      message.textContent = `Já existe um fornecedor chamado ${repetido.nome}.`;
+      return;
+    }
+    const dados = {
+      nome,
+      cidade: form.elements.cidade.value.trim() || null,
+      telefone: form.elements.telefone.value.trim() || null,
+      contato: form.elements.contato.value.trim() || null,
+      site: form.elements.site.value.trim() || null,
+      endereco: form.elements.endereco.value.trim() || null,
+      categorias: form.elements.categorias.value.trim() || null,
+      obs: form.elements.obs.value.trim() || null,
+    };
+    const { error } = editingId
+      ? await db.from("fornecedores").update(dados).eq("id", editingId)
+      : await db.from("fornecedores").insert(dados);
+    if (error) {
+      message.textContent = friendlyError(error);
+      return;
+    }
+    message.textContent = editingId ? "Fornecedor atualizado." : "Fornecedor salvo.";
+    setEditing(null);
+    await refreshAll();
+  });
+
+  cancelButton.addEventListener("click", () => {
+    setEditing(null);
+    message.textContent = "";
+  });
+
+  search.addEventListener("input", renderList);
+
+  list.addEventListener("click", (event) => {
+    const id = event.target.dataset.open;
+    if (!id) return;
+    selectedId = id;
+    renderDetail();
+    detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  detail.addEventListener("click", (event) => {
+    if (event.target.dataset.close) {
+      selectedId = null;
+      renderDetail();
+    }
+    if (event.target.dataset.edit) {
+      setEditing(event.target.dataset.edit);
+      form.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   });
 
@@ -1141,7 +1457,7 @@ const EXPORTS = {
       "estoque",
       ["Código", "Nome", "Fornecedor", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
       cache.estoque.map((p) => [
-        p.codigo, p.nome, p.fornecedor, p.categoria, p.tamanho, p.cor, p.quantidade,
+        p.codigo, p.nome, fornecedorDe(p), p.categoria, p.tamanho, p.cor, p.quantidade,
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
       ])
     ),
@@ -1702,6 +2018,7 @@ showRoute();
 initTrips();
 initStock();
 initClients();
+initFornecedores();
 initVendas();
 initFinance();
 initPainel();

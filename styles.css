@@ -286,7 +286,11 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 .check input { width: auto; margin: 0; }
 
 #client-search,
-#stock-search { margin-bottom: 12px; }
+#stock-search,
+#supplier-search { margin-bottom: 12px; }
+
+.store-checks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.store-checks .check { margin-bottom: 0; }
 
 .birthdays { margin-bottom: 12px; }
 .small { font-size: 13px; }

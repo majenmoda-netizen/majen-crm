@@ -31,6 +31,7 @@
         <a href="#painel" data-route="painel">Painel</a>
         <a href="#viagens" data-route="viagens">Viagens</a>
         <a href="#estoque" data-route="estoque">Estoque</a>
+        <a href="#fornecedores" data-route="fornecedores">Fornecedores</a>
         <a href="#vendas" data-route="vendas">Vendas</a>
         <a href="#clientes" data-route="clientes">Clientes</a>
         <a href="#financeiro" data-route="financeiro">Financeiro</a>
@@ -92,6 +93,13 @@
               </label>
             </div>
 
+            <fieldset class="consent">
+              <legend>Lojas visitadas</legend>
+              <div id="trip-stores" class="store-checks">
+                <p class="muted small">Cadastre os fornecedores na aba Fornecedores.</p>
+              </div>
+            </fieldset>
+
             <label>Observações
               <input type="text" name="obs" placeholder="Opcional">
             </label>
@@ -133,10 +141,9 @@
                 <input type="text" name="codigo" placeholder="Ex.: código do catálogo">
               </label>
               <label>Fornecedor
-                <input type="text" name="fornecedor" list="stock-suppliers" placeholder="Ex.: Natura">
+                <select name="fornecedorId"></select>
               </label>
             </div>
-            <datalist id="stock-suppliers"></datalist>
 
             <label>Nome
               <input type="text" name="nome" placeholder="Ex.: Vestido floral midi" required>
@@ -276,6 +283,69 @@
           </div>
         </div>
       </section>
+      <section class="screen" data-screen="fornecedores">
+        <h1>Fornecedores</h1>
+        <p class="muted">Lojas e fornecedores onde vocês compram. Aqui ficam os dados de cada um e tudo o que foi comprado neles.</p>
+
+        <div class="grid">
+          <form id="supplier-form" class="card" novalidate>
+            <h2 id="supplier-form-title">Novo fornecedor</h2>
+
+            <label>Nome
+              <input type="text" name="nome" placeholder="Ex.: Loja X (Brás)" required>
+            </label>
+
+            <div class="row">
+              <label>Cidade
+                <input type="text" name="cidade" placeholder="Ex.: São Paulo">
+              </label>
+              <label>Telefone / WhatsApp
+                <input type="tel" name="telefone">
+              </label>
+            </div>
+
+            <div class="row">
+              <label>Contato
+                <input type="text" name="contato" placeholder="Quem atende">
+              </label>
+              <label>Site ou Instagram
+                <input type="text" name="site">
+              </label>
+            </div>
+
+            <label>Endereço
+              <input type="text" name="endereco">
+            </label>
+
+            <label>O que vendem
+              <input type="text" name="categorias" placeholder="Ex.: camisetas, vestidos">
+            </label>
+
+            <label>Observações
+              <input type="text" name="obs">
+            </label>
+
+            <div class="actions">
+              <button type="submit" class="btn" id="supplier-submit">Salvar fornecedor</button>
+              <button type="button" class="link-btn" id="supplier-cancel" hidden>Cancelar edição</button>
+              <span id="supplier-message" class="muted"></span>
+            </div>
+          </form>
+
+          <div>
+            <div class="card">
+              <h2>Fornecedores</h2>
+              <input type="search" id="supplier-search" placeholder="Buscar por nome, cidade ou produto">
+              <div id="supplier-list" class="table-wrap">
+                <p class="muted">Nenhum fornecedor cadastrado ainda.</p>
+              </div>
+            </div>
+
+            <div id="supplier-detail" class="card detail" hidden></div>
+          </div>
+        </div>
+      </section>
+
       <section class="screen" data-screen="vendas">
         <h1>Vendas</h1>
         <p class="muted">Registre a venda: as peças saem do estoque e o valor entra no caixa.</p>
@@ -444,6 +514,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>
