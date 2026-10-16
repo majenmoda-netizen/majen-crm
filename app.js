@@ -228,11 +228,13 @@ const vendaFromRow = (r) => ({
   valorTaxa: num(r.valor_taxa || 0),
   totalCobrado: num(r.total_cobrado || r.total),
   numero: r.numero ?? null,
+  obs: r.obs || "",
   estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
     quantidade: num(i.quantidade),
     preco: num(i.preco_unitario),
+    precoTabela: num(i.preco_tabela ?? i.preco_unitario),
     custo: num(i.custo_unitario),
   })),
 });
@@ -1516,6 +1518,209 @@ function initFornecedores() {
   renderers.push(renderDetail);
 }
 
+// ---------- Recibo (PDF) ----------
+
+// Porcentagem sem casa decimal quando é inteira (10% em vez de 10,0%).
+const pctClean = (value) => (Number.isInteger(value) ? `${value}%` : pct(value));
+
+const receiptNumber = (v) => (v.numero ? String(v.numero).padStart(4, "0") : "sem número");
+
+function formatWhats(value) {
+  const d = onlyDigits(value);
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return value;
+}
+
+// Nome do arquivo sem acentos nem símbolos, ex.: recibo-0012-ana-souza.pdf
+function receiptFileName(v) {
+  const cliente = cache.clientes.find((c) => c.id === v.clienteId);
+  const slug = (cliente ? cliente.nome : "venda-avulsa")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `recibo-${v.numero ? String(v.numero).padStart(4, "0") : "venda"}-${slug}.pdf`;
+}
+
+// Monta o recibo de uma venda, simples e minimalista, no formato A5. Textos fixos da loja (contato e
+// observação) vêm do config.js; o resto sai da própria venda.
+function buildReceipt(v) {
+  if (!window.jspdf) throw new Error("A biblioteca de PDF não carregou. Verifique a internet.");
+  const doc = new window.jspdf.jsPDF({ unit: "pt", format: "a5" });
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const M = 34;
+  const ROSE = [135, 87, 101];
+  const BLUSH = [241, 221, 225];
+  const PAPER = [251, 245, 239];
+  const GOLD = [197, 167, 121];
+  const INK = [74, 58, 64];
+  const MUTED = [122, 102, 112];
+  const loja = (window.MAJEN_CONFIG && window.MAJEN_CONFIG.recibo) || {};
+
+  const paintPaper = () => {
+    doc.setFillColor(...PAPER);
+    doc.rect(0, 0, W, H, "F");
+  };
+  paintPaper();
+
+  // Dados da venda
+  const cliente = cache.clientes.find((c) => c.id === v.clienteId);
+  const itens = v.itens.map((i) => {
+    const p = cache.estoque.find((x) => x.id === i.estoqueId);
+    return {
+      qtd: i.quantidade,
+      nome: p ? p.nome : "Peça",
+      detalhe: [p && p.tamanho ? `Tam. ${p.tamanho}` : "", p && p.cor ? p.cor : "", p && p.codigo ? `Cód. ${p.codigo}` : ""].filter(Boolean).join(" · "),
+      unit: i.precoTabela,
+      total: i.quantidade * i.precoTabela,
+    };
+  });
+  const subtotal = itens.reduce((s, i) => s + i.total, 0);
+  const desconto = round2(subtotal - v.total); // inclui o arredondamento por peça, para as linhas fecharem
+  const taxaCliente = v.taxaPagaPor === "cliente" ? v.valorTaxa : 0;
+  const cobrado = v.taxaPagaPor === "cliente" ? v.totalCobrado : v.total;
+
+  // Cabeçalho
+  doc.setFont("times", "normal");
+  doc.setFontSize(26);
+  doc.setTextColor(...ROSE);
+  doc.text("MAJEN", M, 62, { charSpace: 6 });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(...MUTED);
+  doc.text("Moda e perfumaria", M, 77);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(...ROSE);
+  doc.text(`Recibo nº ${receiptNumber(v)}`, W - M, 54, { align: "right" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(...MUTED);
+  doc.text(formatDate(v.data), W - M, 68, { align: "right" });
+  doc.setDrawColor(...GOLD);
+  doc.setLineWidth(0.9);
+  doc.line(M, 88, W - M, 88);
+
+  // Cliente
+  doc.setFontSize(7.5);
+  doc.text("CLIENTE", M, 112, { charSpace: 1 });
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10.5);
+  doc.setTextColor(...INK);
+  doc.text(cliente ? cliente.nome : "Venda avulsa", M, 127);
+  if (cliente) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(...MUTED);
+    doc.text(`WhatsApp ${formatWhats(cliente.whatsapp)}`, M, 140);
+  }
+
+  // Itens
+  doc.autoTable({
+    startY: 156,
+    head: [["Qtd", "Descrição", "Valor un.", "Total"]],
+    body: itens.map((i) => [String(i.qtd), `${i.nome}${i.detalhe ? "\n " : ""}`, moneyText(i.unit), moneyText(i.total)]),
+    theme: "plain",
+    margin: { left: M, right: M, bottom: 60 },
+    styles: { fontSize: 9, textColor: INK, cellPadding: { top: 6, bottom: 6, left: 0, right: 0 }, valign: "top" },
+    headStyles: { textColor: ROSE, fontSize: 8, fontStyle: "bold", cellPadding: { top: 3, bottom: 5, left: 0, right: 0 } },
+    columnStyles: { 0: { cellWidth: 30 }, 2: { halign: "right", cellWidth: 66 }, 3: { halign: "right", cellWidth: 66 } },
+    willDrawPage: (data) => {
+      if (data.pageNumber > 1) paintPaper();
+    },
+    didParseCell: (data) => {
+      if (data.section === "head" && data.column.index >= 2) data.cell.styles.halign = "right";
+    },
+    didDrawCell: (data) => {
+      const { cell } = data;
+      doc.setDrawColor(...BLUSH);
+      doc.setLineWidth(data.section === "head" ? 0.9 : 0.5);
+      doc.line(cell.x, cell.y + cell.height, cell.x + cell.width, cell.y + cell.height);
+      if (data.section === "body" && data.column.index === 1 && itens[data.row.index].detalhe) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.5);
+        doc.setTextColor(...MUTED);
+        doc.text(itens[data.row.index].detalhe, cell.x, cell.y + 6 + 10.5 + 9);
+      }
+    },
+  });
+
+  // Totais (à direita)
+  let y = doc.lastAutoTable.finalY + 16;
+  if (y > H - 215) {
+    doc.addPage();
+    paintPaper();
+    y = 48;
+  }
+  const left = W - M - 190;
+  const line = (label, value) => {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(...MUTED);
+    doc.text(label, left, y);
+    doc.setTextColor(...INK);
+    doc.text(value, W - M, y, { align: "right" });
+    y += 15;
+  };
+  line("Subtotal", moneyText(subtotal));
+  if (desconto > 0) line(`Desconto (${pctClean(v.desconto)})`, `- ${moneyText(desconto)}`);
+  if (taxaCliente > 0) line(`Taxa da maquininha (${pctClean(v.taxa)})`, `+ ${moneyText(taxaCliente)}`);
+  doc.setDrawColor(...GOLD);
+  doc.setLineWidth(0.8);
+  doc.line(left, y - 6, W - M, y - 6);
+  y += 8;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.setTextColor(...ROSE);
+  doc.text("Total", left, y);
+  doc.setFont("times", "normal");
+  doc.setFontSize(17);
+  doc.text(moneyText(cobrado), W - M, y + 1, { align: "right" });
+  y += 24;
+
+  // Pagamento
+  doc.setFillColor(...BLUSH);
+  doc.roundedRect(M, y, W - 2 * M, 26, 3, 3, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...ROSE);
+  doc.text("Pagamento", M + 10, y + 16);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...INK);
+  const pagamento = v.parcelas > 1 ? `${v.forma} · ${v.parcelas}x de ${moneyText(round2(cobrado / v.parcelas))}` : v.forma || "Não informado";
+  doc.text(pagamento, W - M - 10, y + 16, { align: "right" });
+  y += 42;
+
+  // Observações da venda e da loja
+  const notes = [v.obs, loja.observacao].filter(Boolean).join(" ");
+  if (notes) {
+    doc.setFontSize(8.5);
+    doc.setTextColor(...MUTED);
+    doc.text(doc.splitTextToSize(notes, W - 2 * M), M, y);
+  }
+
+  // Rodapé
+  const footer = H - 74;
+  doc.setDrawColor(...BLUSH);
+  doc.setLineWidth(0.6);
+  doc.line(M, footer, W - M, footer);
+  doc.setFont("times", "normal");
+  doc.setFontSize(12);
+  doc.setTextColor(...ROSE);
+  doc.text("Obrigada pela preferência", W / 2, footer + 20, { align: "center" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(...MUTED);
+  if (loja.contato) doc.text(loja.contato, W / 2, footer + 34, { align: "center" });
+  doc.setFontSize(7);
+  doc.setTextColor(168, 154, 162);
+  doc.text("Este recibo não substitui nota fiscal.", W / 2, footer + 48, { align: "center" });
+  return doc;
+}
+
 // ---------- Vendas ----------
 
 function initVendas() {
@@ -1655,7 +1860,9 @@ function initVendas() {
         const lucro = v.itens.reduce((sum, i) => sum + i.quantidade * (i.preco - i.custo), 0) - (v.taxaPagaPor === "loja" ? v.valorTaxa : 0);
         const action = v.estornada
           ? '<span class="muted small">Desfeita</span>'
-          : `<button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
+          : `<button class="link-btn" data-recibo="${v.id}" type="button">Recibo</button>
+             <button class="link-btn" data-imprimir="${v.id}" type="button">Imprimir</button>
+             <button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
         return `
           <tr class="${v.estornada ? "undone" : ""}">
             <td>${formatDate(v.data)}</td>
@@ -1675,6 +1882,27 @@ function initVendas() {
         <tbody>${rows}</tbody>
       </table>`;
   }
+
+  list.addEventListener("click", (event) => {
+    const { recibo, imprimir } = event.target.dataset;
+    const id = recibo || imprimir;
+    if (!id) return;
+    const venda = cache.vendas.find((x) => x.id === id);
+    if (!venda) return;
+    try {
+      const doc = buildReceipt(venda);
+      if (recibo) {
+        doc.save(receiptFileName(venda));
+        message.textContent = `Recibo nº ${receiptNumber(venda)} gerado.`;
+      } else {
+        doc.autoPrint();
+        window.open(doc.output("bloburl"), "_blank");
+        message.textContent = `Recibo nº ${receiptNumber(venda)} aberto para imprimir.`;
+      }
+    } catch (error) {
+      message.textContent = `Não foi possível gerar o recibo. ${error.message || ""}`;
+    }
+  });
 
   list.addEventListener("click", async (event) => {
     const id = event.target.dataset.estornar;
