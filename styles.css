@@ -410,6 +410,9 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 
 .list-card { margin-top: 24px; }
 
+.undone td { color: var(--muted); text-decoration: line-through; }
+.undone td:last-child { text-decoration: none; }
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

@@ -182,6 +182,7 @@ const vendaFromRow = (r) => ({
   clienteId: r.cliente_id,
   forma: r.forma_pagamento || "",
   total: num(r.total),
+  estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
     quantidade: num(i.quantidade),
@@ -780,22 +781,39 @@ function initVendas() {
       .map((v) => {
         const cliente = cache.clientes.find((c) => c.id === v.clienteId);
         const pecas = v.itens.reduce((sum, i) => sum + i.quantidade, 0);
+        const action = v.estornada
+          ? '<span class="muted small">Desfeita</span>'
+          : `<button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
         return `
-          <tr>
+          <tr class="${v.estornada ? "undone" : ""}">
             <td>${formatDate(v.data)}</td>
             <td>${cliente ? escapeHtml(cliente.nome) : "—"}</td>
             <td>${escapeHtml(v.forma || "—")}</td>
             <td>${pecas} peça(s)</td>
             <td><strong>${brl.format(v.total)}</strong></td>
+            <td>${action}</td>
           </tr>`;
       })
       .join("");
     list.innerHTML = `
       <table>
-        <thead><tr><th>Data</th><th>Cliente</th><th>Pagamento</th><th>Itens</th><th>Total</th></tr></thead>
+        <thead><tr><th>Data</th><th>Cliente</th><th>Pagamento</th><th>Itens</th><th>Total</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   }
+
+  list.addEventListener("click", async (event) => {
+    const id = event.target.dataset.estornar;
+    if (!id) return;
+    if (!window.confirm("Desfazer esta venda? As peças voltam ao estoque e o valor é estornado no caixa.")) return;
+    const { error } = await db.rpc("estornar_venda", { p_venda_id: id, p_data: todayISO() });
+    if (error) {
+      message.textContent = `Não foi possível desfazer a venda. ${error.message}`;
+      return;
+    }
+    message.textContent = "Venda desfeita.";
+    await refreshAll();
+  });
 
   document.getElementById("sale-add-item").addEventListener("click", () => {
     addItemRow();
@@ -1049,7 +1067,8 @@ function initPainel() {
 
   function renderPainel() {
     const key = monthKey(todayISO());
-    const vendasMes = cache.vendas.filter((v) => monthKey(v.data) === key);
+    const vendasAtivas = cache.vendas.filter((v) => !v.estornada);
+    const vendasMes = vendasAtivas.filter((v) => monthKey(v.data) === key);
     const faturamento = vendasMes.reduce((sum, v) => sum + v.total, 0);
     const lucro = vendasMes.reduce(
       (sum, v) => sum + v.itens.reduce((acc, i) => acc + i.quantidade * (i.preco - i.custo), 0),
@@ -1073,7 +1092,7 @@ function initPainel() {
       .sort((a, b) => a.dias - b.dias)
       .map(({ c, dias }) => `${escapeHtml(c.nome)} <strong>${dias === 0 ? "hoje" : dias === 1 ? "amanhã" : `em ${dias} dias`}</strong>`);
 
-    const ultimas = cache.vendas.slice(0, 5).map((v) => {
+    const ultimas = vendasAtivas.slice(0, 5).map((v) => {
       const cliente = cache.clientes.find((c) => c.id === v.clienteId);
       return `${formatDate(v.data)} · ${cliente ? escapeHtml(cliente.nome) : "venda avulsa"} <strong>${brl.format(v.total)}</strong>`;
     });
