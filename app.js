@@ -139,6 +139,7 @@ const stockFromRow = (r) => ({
   categoria: r.categoria,
   tamanho: r.tamanho || "",
   cor: r.cor || "",
+  codigo: r.codigo || "",
   quantidade: num(r.quantidade),
   viagemId: r.viagem_id,
   custoProduto: num(r.custo_produto),
@@ -356,6 +357,7 @@ function initStock() {
   const photoPreview = document.getElementById("stock-photo-preview");
   const message = document.getElementById("stock-message");
   const list = document.getElementById("stock-list");
+  const search = document.getElementById("stock-search");
   let photoData = "";
 
   function fillTrips() {
@@ -394,15 +396,19 @@ function initStock() {
 
   function renderList() {
     fillTrips();
-    const items = cache.estoque;
+    const term = search.value.trim().toLowerCase();
+    const items = cache.estoque.filter(
+      (p) => !term || [p.codigo, p.nome, p.cor, p.tamanho].some((field) => (field || "").toLowerCase().includes(term))
+    );
     if (items.length === 0) {
-      list.innerHTML = '<p class="muted">Nenhuma peça cadastrada ainda.</p>';
+      list.innerHTML = `<p class="muted">${term ? "Nenhuma peça encontrada." : "Nenhuma peça cadastrada ainda."}</p>`;
       return;
     }
     const rows = items
       .map((item) => `
         <tr>
           <td>${item.foto ? `<img class="thumb" src="${item.foto}" alt="">` : "—"}</td>
+          <td>${escapeHtml(item.codigo || "—")}</td>
           <td>${escapeHtml(item.nome)}</td>
           <td>${item.categoria}</td>
           <td>${escapeHtml(item.tamanho || "—")}</td>
@@ -420,7 +426,7 @@ function initStock() {
     list.innerHTML = `
       <table>
         <thead>
-          <tr><th>Foto</th><th>Nome</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th></th></tr>
+          <tr><th>Foto</th><th>Código</th><th>Nome</th><th>Categoria</th><th>Tamanho</th><th>Cor</th><th>Qtd</th><th>Custo</th><th>Venda</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -441,6 +447,7 @@ function initStock() {
 
   form.addEventListener("input", renderPreview);
   tripSelect.addEventListener("change", renderPreview);
+  search.addEventListener("input", renderList);
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -454,6 +461,7 @@ function initStock() {
     const c = currentCost();
     const precoVenda = num(form.elements.precoVenda.value) || suggestPrice(c.total);
     const { error } = await db.from("estoque").insert({
+      codigo: form.elements.codigo.value.trim() || null,
       nome,
       categoria: form.elements.categoria.value,
       tamanho: form.elements.tamanho.value.trim() || null,
@@ -728,7 +736,7 @@ function initVendas() {
   function optionsEstoque(selected) {
     const options = cache.estoque
       .filter((p) => p.quantidade > 0)
-      .map((p) => `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${escapeHtml(p.nome)}${p.tamanho ? ` · ${escapeHtml(p.tamanho)}` : ""} (${p.quantidade} un.)</option>`)
+      .map((p) => `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${p.codigo ? `[${escapeHtml(p.codigo)}] ` : ""}${escapeHtml(p.nome)}${p.tamanho ? ` · ${escapeHtml(p.tamanho)}` : ""} (${p.quantidade} un.)</option>`)
       .join("");
     return `<option value="">Escolha a peça</option>${options}`;
   }
@@ -1099,9 +1107,9 @@ const EXPORTS = {
   estoque: () =>
     downloadCsv(
       "estoque",
-      ["Nome", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
+      ["Código", "Nome", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda"],
       cache.estoque.map((p) => [
-        p.nome, p.categoria, p.tamanho, p.cor, p.quantidade,
+        p.codigo, p.nome, p.categoria, p.tamanho, p.cor, p.quantidade,
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
       ])
     ),
@@ -1115,6 +1123,395 @@ const EXPORTS = {
       ])
     ),
 };
+
+// ---------- Relatórios (Excel e PDF) ----------
+
+const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const moneyText = (n) => brl.format(n).replace(/ /g, " ");
+const periodLabel = (r) => `${r.from ? formatDate(r.from) : "início"} a ${r.to ? formatDate(r.to) : "hoje"}`;
+
+// Reúne os números do período. from/to em AAAA-MM-DD; vazio = sem limite.
+// Vendas desfeitas aparecem nas listas (com status), mas não entram nos totais de vendas.
+function buildReport(from, to) {
+  const inRange = (iso) => (!from || iso >= from) && (!to || iso <= to);
+  const byDate = (a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0);
+  const nomeCliente = (id) => {
+    const c = cache.clientes.find((x) => x.id === id);
+    return c ? c.nome : "Venda avulsa";
+  };
+
+  const vendas = cache.vendas.filter((v) => inRange(v.data)).sort(byDate);
+  const ativas = vendas.filter((v) => !v.estornada);
+
+  const itens = [];
+  vendas.forEach((v) => {
+    v.itens.forEach((i) => {
+      const peca = cache.estoque.find((x) => x.id === i.estoqueId);
+      itens.push({
+        cliente: nomeCliente(v.clienteId),
+        data: v.data,
+        peca: peca ? peca.nome : "(peça removida)",
+        codigo: peca ? peca.codigo : "",
+        tamanho: peca ? peca.tamanho : "",
+        cor: peca ? peca.cor : "",
+        quantidade: i.quantidade,
+        preco: i.preco,
+        custo: i.custo,
+        subtotal: i.quantidade * i.preco,
+        pagamento: v.forma,
+        status: v.estornada ? "Desfeita" : "Ativa",
+      });
+    });
+  });
+  itens.sort((a, b) => a.cliente.localeCompare(b.cliente, "pt-BR") || byDate(a, b));
+
+  const itensAtivos = itens.filter((i) => i.status === "Ativa");
+  const faturamento = ativas.reduce((sum, v) => sum + v.total, 0);
+  const pecas = itensAtivos.reduce((sum, i) => sum + i.quantidade, 0);
+  const custo = itensAtivos.reduce((sum, i) => sum + i.quantidade * i.custo, 0);
+  const lucro = faturamento - custo;
+
+  const lancamentos = cache.lancamentos.filter((l) => inRange(l.data)).sort(byDate);
+  const entradas = sumByTipo(lancamentos, "entrada");
+  const saidas = sumByTipo(lancamentos, "saida");
+
+  const agrupar = (list, chave, valor) => {
+    const mapa = new Map();
+    list.forEach((x) => mapa.set(chave(x), (mapa.get(chave(x)) || 0) + valor(x)));
+    return [...mapa.entries()].sort((a, b) => b[1] - a[1]);
+  };
+  const porForma = agrupar(ativas, (v) => v.forma || "Não informado", (v) => v.total);
+  const saidasPorCategoria = agrupar(lancamentos.filter((l) => l.tipo === "saida"), (l) => l.categoria, (l) => l.valor);
+
+  const clientes = cache.clientes
+    .map((cliente) => {
+      const minhas = ativas.filter((v) => v.clienteId === cliente.id);
+      return {
+        cliente,
+        vendas: minhas.length,
+        pecas: minhas.reduce((sum, v) => sum + v.itens.reduce((acc, i) => acc + i.quantidade, 0), 0),
+        totalPeriodo: minhas.reduce((sum, v) => sum + v.total, 0),
+      };
+    })
+    .sort((a, b) => b.totalPeriodo - a.totalPeriodo || a.cliente.nome.localeCompare(b.cliente.nome, "pt-BR"));
+
+  return {
+    from, to, vendas, ativas, itens, lancamentos, clientes, porForma, saidasPorCategoria, nomeCliente,
+    totais: {
+      faturamento, pecas, custo, lucro,
+      ticket: ativas.length ? faturamento / ativas.length : 0,
+      margem: faturamento ? lucro / faturamento : 0,
+      entradas, saidas, resultado: entradas - saidas,
+    },
+  };
+}
+
+// Linhas do resumo, usadas no Excel e no PDF.
+function summaryRows(r) {
+  const t = r.totais;
+  const rows = [
+    { section: "Vendas" },
+    { label: "Número de vendas", value: r.ativas.length, type: "int" },
+    { label: "Peças vendidas", value: t.pecas, type: "int" },
+    { label: "Faturamento", value: t.faturamento, type: "money" },
+    { label: "Ticket médio", value: t.ticket, type: "money" },
+    { label: "Custo das peças vendidas", value: t.custo, type: "money" },
+    { label: "Lucro bruto", value: t.lucro, type: "money" },
+    { label: "Margem bruta", value: t.margem, type: "pct" },
+    { section: "Financeiro (caixa)" },
+    { label: "Entradas", value: t.entradas, type: "money" },
+    { label: "Saídas", value: t.saidas, type: "money" },
+    { label: "Resultado", value: t.resultado, type: "money" },
+    { section: "Vendas por forma de pagamento" },
+  ];
+  if (r.porForma.length === 0) rows.push({ label: "Sem vendas no período", value: "", type: "text" });
+  r.porForma.forEach(([forma, valor]) => rows.push({ label: forma, value: valor, type: "money" }));
+  rows.push({ section: "Saídas por categoria" });
+  if (r.saidasPorCategoria.length === 0) rows.push({ label: "Sem saídas no período", value: "", type: "text" });
+  r.saidasPorCategoria.forEach(([cat, valor]) => rows.push({ label: cat, value: valor, type: "money" }));
+  return rows;
+}
+
+function exportExcel(r) {
+  if (!window.XLSX) throw new Error("A biblioteca de Excel não carregou. Verifique a internet.");
+  const wb = XLSX.utils.book_new();
+  const MONEY = '"R$" #,##0.00';
+
+  const addSheet = (name, aoa, widths, moneyCols = []) => {
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = widths.map((wch) => ({ wch }));
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    for (let row = 1; row <= range.e.r; row++) {
+      moneyCols.forEach((col) => {
+        const cell = ws[XLSX.utils.encode_cell({ r: row, c: col })];
+        if (cell && cell.t === "n") cell.z = MONEY;
+      });
+    }
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  };
+
+  const resumo = [["MAJEN - Resumo de vendas e financeiro"], ["Período", periodLabel(r)], ["Gerado em", todayBR()], []];
+  const tipos = {};
+  summaryRows(r).forEach((row) => {
+    if (row.section) {
+      resumo.push([], [row.section.toUpperCase()]);
+      return;
+    }
+    tipos[resumo.length] = row.type;
+    resumo.push([row.label, row.value]);
+  });
+  const wsResumo = XLSX.utils.aoa_to_sheet(resumo);
+  wsResumo["!cols"] = [{ wch: 34 }, { wch: 20 }];
+  Object.entries(tipos).forEach(([rowIndex, type]) => {
+    const cell = wsResumo[XLSX.utils.encode_cell({ r: Number(rowIndex), c: 1 })];
+    if (!cell || cell.t !== "n") return;
+    cell.z = type === "money" ? MONEY : type === "pct" ? "0.0%" : "0";
+  });
+  XLSX.utils.book_append_sheet(wb, wsResumo, "Resumo");
+
+  addSheet(
+    "Vendas",
+    [["Data", "Cliente", "Pagamento", "Peças", "Total", "Status"]].concat(
+      r.vendas.map((v) => [
+        formatDate(v.data), r.nomeCliente(v.clienteId), v.forma,
+        v.itens.reduce((sum, i) => sum + i.quantidade, 0), v.total, v.estornada ? "Desfeita" : "Ativa",
+      ])
+    ),
+    [12, 28, 18, 8, 14, 10],
+    [4]
+  );
+
+  addSheet(
+    "Compras por cliente",
+    [["Cliente", "Data", "Peça", "Código", "Tamanho", "Cor", "Quantidade", "Valor unitário", "Subtotal", "Pagamento", "Status"]].concat(
+      r.itens.map((i) => [i.cliente, formatDate(i.data), i.peca, i.codigo, i.tamanho, i.cor, i.quantidade, i.preco, i.subtotal, i.pagamento, i.status])
+    ),
+    [28, 12, 30, 14, 10, 12, 12, 16, 14, 18, 10],
+    [7, 8]
+  );
+
+  addSheet(
+    "Clientes",
+    [["Nome", "WhatsApp", "Aniversário", "Origem", "Tamanho habitual", "Perfume", "Estilo", "Aceita WhatsApp", "Aceita promoções", "Compras no período", "Peças no período", "Total no período", "Total geral gasto", "Última compra"]].concat(
+      r.clientes.map(({ cliente: c, vendas, pecas, totalPeriodo }) => [
+        c.nome, c.whatsapp, formatDate(c.aniversario), c.origem, c.tamanho, c.perfume, c.estilo,
+        c.consentWhats ? "Sim" : "Não", c.consentPromo ? "Sim" : "Não",
+        vendas, pecas, totalPeriodo, totalSpent(c), formatDate(lastPurchase(c)),
+      ])
+    ),
+    [28, 16, 12, 16, 16, 16, 20, 16, 16, 18, 16, 16, 16, 14],
+    [11, 12]
+  );
+
+  addSheet(
+    "Financeiro",
+    [["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor"]].concat(
+      r.lancamentos.map((l) => [formatDate(l.data), l.tipo === "entrada" ? "Entrada" : "Saída", l.categoria, l.descricao, l.forma, l.valor])
+    ),
+    [12, 10, 24, 40, 18, 14],
+    [5]
+  );
+
+  XLSX.writeFile(wb, `majen-relatorio-${todayISO()}.xlsx`);
+}
+
+function exportPdf(r) {
+  if (!window.jspdf) throw new Error("A biblioteca de PDF não carregou. Verifique a internet.");
+  const doc = new window.jspdf.jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const ROSE = [135, 87, 101];
+  const BLUSH = [241, 221, 225];
+  const PAPER = [251, 245, 239];
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(22);
+  doc.setTextColor(...ROSE);
+  doc.text("MAJEN", 40, 46);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(74, 58, 64);
+  doc.text("Relatório de vendas e financeiro", 40, 64);
+  doc.text(`Período: ${periodLabel(r)}   ·   Gerado em ${todayBR()}`, 40, 80);
+
+  let y = 106;
+  const section = (title, head, body, columnStyles = {}) => {
+    if (y > pageHeight - 120) {
+      doc.addPage();
+      y = 40;
+    }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(...ROSE);
+    doc.text(title, 40, y);
+    doc.autoTable({
+      startY: y + 8,
+      head: [head],
+      body: body.length ? body : [["Sem registros no período"]],
+      theme: "striped",
+      headStyles: { fillColor: ROSE, textColor: 255 },
+      alternateRowStyles: { fillColor: PAPER },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [74, 58, 64] },
+      columnStyles,
+      margin: { left: 40, right: 40 },
+    });
+    y = doc.lastAutoTable.finalY + 28;
+  };
+
+  const formatValue = (row) => {
+    if (row.type === "money") return moneyText(row.value);
+    if (row.type === "pct") return `${(row.value * 100).toFixed(1).replace(".", ",")}%`;
+    return String(row.value);
+  };
+  const resumoBody = summaryRows(r).map((row) =>
+    row.section
+      ? [{ content: row.section, colSpan: 2, styles: { fillColor: BLUSH, textColor: ROSE, fontStyle: "bold" } }]
+      : [row.label, formatValue(row)]
+  );
+  section("Resumo", ["Indicador", "Valor"], resumoBody, { 1: { halign: "right" } });
+
+  section(
+    "Compras por cliente (quem comprou o quê)",
+    ["Cliente", "Data", "Peça", "Cód.", "Tam.", "Cor", "Qtd", "Valor unit.", "Subtotal", "Status"],
+    r.itens.map((i) => [i.cliente, formatDate(i.data), i.peca, i.codigo || "—", i.tamanho, i.cor, String(i.quantidade), moneyText(i.preco), moneyText(i.subtotal), i.status]),
+    { 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" } }
+  );
+
+  section(
+    "Vendas",
+    ["Data", "Cliente", "Pagamento", "Peças", "Total", "Status"],
+    r.vendas.map((v) => [
+      formatDate(v.data), r.nomeCliente(v.clienteId), v.forma || "—",
+      String(v.itens.reduce((sum, i) => sum + i.quantidade, 0)), moneyText(v.total), v.estornada ? "Desfeita" : "Ativa",
+    ]),
+    { 3: { halign: "right" }, 4: { halign: "right" } }
+  );
+
+  section(
+    "Financeiro (entradas e saídas)",
+    ["Data", "Tipo", "Categoria", "Descrição", "Pagamento", "Valor"],
+    r.lancamentos.map((l) => [
+      formatDate(l.data), l.tipo === "entrada" ? "Entrada" : "Saída", l.categoria, l.descricao || "—", l.forma || "—", moneyText(l.valor),
+    ]),
+    { 5: { halign: "right" } }
+  );
+
+  section(
+    "Clientes",
+    ["Cliente", "WhatsApp", "Aniversário", "Compras", "Peças", "Total no período", "Total geral"],
+    r.clientes.map(({ cliente: c, vendas, pecas, totalPeriodo }) => [
+      c.nome, c.whatsapp, formatDate(c.aniversario), String(vendas), String(pecas), moneyText(totalPeriodo), moneyText(totalSpent(c)),
+    ]),
+    { 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } }
+  );
+
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(122, 102, 112);
+    doc.text(`MAJEN · Página ${i} de ${pages}`, pageWidth - 40, pageHeight - 20, { align: "right" });
+  }
+  doc.save(`majen-relatorio-${todayISO()}.pdf`);
+}
+
+function initRelatorios() {
+  const fromInput = document.getElementById("report-from");
+  if (!fromInput) return;
+  const toInput = document.getElementById("report-to");
+  const message = document.getElementById("report-message");
+  const preview = document.getElementById("report-preview");
+  maskDateBR(fromInput);
+  maskDateBR(toInput);
+
+  function readPeriod() {
+    const from = fromInput.value.trim() ? parseDateBR(fromInput.value) : "";
+    const to = toInput.value.trim() ? parseDateBR(toInput.value) : "";
+    if (from === null || to === null) {
+      message.textContent = "Confira as datas (DD/MM/AAAA).";
+      return null;
+    }
+    if (from && to && from > to) {
+      message.textContent = "A data inicial não pode ser depois da final.";
+      return null;
+    }
+    message.textContent = "";
+    return { from, to };
+  }
+
+  function listCard(title, items, emptyText) {
+    const body = items.length
+      ? `<ul class="simple-list">${items.map((i) => `<li>${i}</li>`).join("")}</ul>`
+      : `<p class="muted">${emptyText}</p>`;
+    return `<div class="card"><h2>${title}</h2>${body}</div>`;
+  }
+
+  function renderRelatorios() {
+    const period = readPeriod();
+    if (!period) return;
+    const r = buildReport(period.from, period.to);
+    const t = r.totais;
+    const kpi = (label, value, negative = false) =>
+      `<div class="card kpi"><span class="muted small">${label}</span><strong class="${negative ? "neg" : ""}">${value}</strong></div>`;
+
+    const topClientes = r.clientes
+      .filter((x) => x.totalPeriodo > 0)
+      .slice(0, 5)
+      .map((x) => `${escapeHtml(x.cliente.nome)} <strong>${moneyText(x.totalPeriodo)} · ${x.pecas} peça(s)</strong>`);
+
+    preview.innerHTML = `
+      <div class="kpis">
+        ${kpi("Faturamento", moneyText(t.faturamento))}
+        ${kpi("Lucro bruto", moneyText(t.lucro), t.lucro < 0)}
+        ${kpi("Peças vendidas", String(t.pecas))}
+        ${kpi("Ticket médio", moneyText(t.ticket))}
+        ${kpi("Entradas (caixa)", moneyText(t.entradas))}
+        ${kpi("Saídas (caixa)", moneyText(t.saidas))}
+        ${kpi("Resultado (caixa)", moneyText(t.resultado), t.resultado < 0)}
+      </div>
+      <div class="panel-grid">
+        ${listCard("Vendas por forma de pagamento", r.porForma.map(([f, v]) => `${escapeHtml(f)} <strong>${moneyText(v)}</strong>`), "Sem vendas no período.")}
+        ${listCard("Saídas por categoria", r.saidasPorCategoria.map(([c, v]) => `${escapeHtml(c)} <strong>${moneyText(v)}</strong>`), "Sem saídas no período.")}
+        ${listCard("Maiores clientes do período", topClientes, "Sem compras de clientes no período.")}
+      </div>`;
+  }
+
+  function setPreset(kind) {
+    if (kind === "tudo") {
+      fromInput.value = "";
+      toInput.value = "";
+    } else {
+      const now = new Date();
+      const offset = kind === "mes-passado" ? -1 : 0;
+      fromInput.value = formatDate(isoOf(new Date(now.getFullYear(), now.getMonth() + offset, 1)));
+      toInput.value = formatDate(isoOf(new Date(now.getFullYear(), now.getMonth() + offset + 1, 0)));
+    }
+    renderRelatorios();
+  }
+
+  function generate(exporter) {
+    const period = readPeriod();
+    if (!period) return;
+    try {
+      exporter(buildReport(period.from, period.to));
+      message.textContent = "Arquivo gerado.";
+    } catch (error) {
+      message.textContent = `Não foi possível gerar o arquivo. ${error.message || ""}`;
+    }
+  }
+
+  fromInput.addEventListener("input", renderRelatorios);
+  toInput.addEventListener("input", renderRelatorios);
+  document.querySelector(".presets").addEventListener("click", (event) => {
+    if (event.target.dataset.preset) setPreset(event.target.dataset.preset);
+  });
+  document.getElementById("report-xlsx").addEventListener("click", () => generate(exportExcel));
+  document.getElementById("report-pdf").addEventListener("click", () => generate(exportPdf));
+
+  renderers.push(renderRelatorios);
+  setPreset("mes");
+}
 
 // ---------- Painel ----------
 
@@ -1276,4 +1673,5 @@ initClients();
 initVendas();
 initFinance();
 initPainel();
+initRelatorios();
 initAuth();

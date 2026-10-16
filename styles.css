@@ -285,7 +285,8 @@ tbody tr:nth-child(even) { background: var(--off-white); }
 
 .check input { width: auto; margin: 0; }
 
-#client-search { margin-bottom: 12px; }
+#client-search,
+#stock-search { margin-bottom: 12px; }
 
 .birthdays { margin-bottom: 12px; }
 .small { font-size: 13px; }
