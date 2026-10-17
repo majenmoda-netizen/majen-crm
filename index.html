@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MAJEN CRM</title>
-  <link rel="stylesheet" href="styles.css">
+  <meta name="theme-color" content="#875765">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=26">
 </head>
 <body>
   <section id="login" class="login">
@@ -41,6 +44,7 @@
     </aside>
 
     <main class="content">
+      <div id="offline-bar" class="offline-bar" role="status" hidden></div>
       <section class="screen" data-screen="painel">
         <h1>Painel</h1>
         <p class="muted">Resumo da loja neste mês.</p>
@@ -548,7 +552,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
-  <script src="config.js?v=25"></script>
-  <script src="app.js?v=25"></script>
+  <script src="config.js?v=26"></script>
+  <script src="offline.js?v=26"></script>
+  <script src="app.js?v=26"></script>
 </body>
 </html>

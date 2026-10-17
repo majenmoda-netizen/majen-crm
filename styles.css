@@ -564,3 +564,15 @@ tbody tr:nth-child(even) { background: var(--off-white); }
   .content { padding: 20px 16px; }
 }
 
+
+/* Aviso de vendas sem internet */
+.offline-bar {
+  background: #FFF6E0;
+  border: 1px solid var(--champagne);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+.offline-bar p { margin: 4px 0; }
+.offline-bar .offline-erro { color: #9B2C2C; }

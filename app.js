@@ -272,11 +272,183 @@ async function loadAll() {
   cache.viagens.forEach((t) => {
     t.fornecedorIds = porViagem[t.id] || [];
   });
+
+  // Guarda uma cópia para abrir sem internet e depois mostra as vendas que ainda não foram enviadas.
+  salvarCopiaLocal(cache);
+  aplicarPendentes();
 }
 
 async function refreshAll() {
   await loadAll();
   renderers.forEach((render) => render());
+}
+
+// ---------- Vendas sem internet ----------
+
+let modoCopia = false; // true quando a tela mostra a cópia guardada no aparelho (sem conexão com o banco)
+
+const fila = criarFila({
+  estaOnline: () => navigator.onLine && !!db,
+  enviar: async (item) => {
+    try {
+      return await db.rpc("registrar_venda", item.params);
+    } catch (error) {
+      return { error: { message: String((error && error.message) || error) } };
+    }
+  },
+});
+
+// Mesma conta do banco: o desconto reduz o preço de cada peça (em centavos) e a taxa vem sobre o total.
+function calcularVendaPendente(params) {
+  const desconto = params.p_desconto || 0;
+  const preco = (i) => round2(i.preco * (1 - desconto / 100));
+  const subtotal = params.p_itens.reduce((sum, i) => sum + i.quantidade * i.preco, 0);
+  const total = params.p_itens.reduce((sum, i) => sum + i.quantidade * preco(i), 0);
+  const valorTaxa = round2((total * (params.p_taxa || 0)) / 100);
+  const cobrado = params.p_taxa_paga_por === "loja" ? total : total + valorTaxa;
+  return { subtotal, total, valorTaxa, cobrado, preco };
+}
+
+// Mostra as vendas guardadas no aparelho como se já estivessem no sistema (estoque, totais e lista),
+// marcadas como "aguardando envio". Vendas que o banco recusou ficam de fora até a pessoa resolver.
+function aplicarPendentes() {
+  fila.itens().forEach((item) => {
+    if (item.erro || cache.vendas.some((v) => v.id === item.id)) return;
+    const p = item.params;
+    const c = calcularVendaPendente(p);
+    p.p_itens.forEach((i) => {
+      const peca = cache.estoque.find((x) => x.id === i.estoque_id);
+      if (peca) peca.quantidade = Math.max(0, peca.quantidade - i.quantidade);
+    });
+    cache.vendas.unshift({
+      id: item.id,
+      data: p.p_data,
+      clienteId: p.p_cliente_id,
+      forma: p.p_forma,
+      total: round2(c.total),
+      parcelas: p.p_parcelas || 1,
+      desconto: p.p_desconto || 0,
+      subtotal: round2(c.subtotal),
+      taxa: p.p_taxa || 0,
+      taxaPagaPor: p.p_taxa_paga_por,
+      valorTaxa: c.valorTaxa,
+      totalCobrado: round2(c.cobrado),
+      numero: null,
+      obs: p.p_obs || "",
+      estornada: false,
+      pendente: true,
+      itens: p.p_itens.map((i) => {
+        const peca = cache.estoque.find((x) => x.id === i.estoque_id);
+        return { estoqueId: i.estoque_id, quantidade: i.quantidade, preco: c.preco(i), precoTabela: i.preco, custo: peca ? peca.custoTotal : 0 };
+      }),
+    });
+    const cliente = cache.clientes.find((x) => x.id === p.p_cliente_id);
+    if (cliente) cliente.compras.push({ id: `pendente-${item.id}`, data: p.p_data, valor: round2(c.total), descricao: "Venda" });
+  });
+}
+
+// Entrega as vendas guardadas e, se alguma foi, recarrega os dados do banco.
+async function sincronizarVendas() {
+  if (!db || (fila.itens().length === 0 && !modoCopia)) return;
+  if (modoCopia && navigator.onLine) {
+    const { data } = await db.auth.getSession();
+    if (data.session) {
+      try {
+        await refreshAll();
+        modoCopia = false;
+      } catch (error) {
+        // Ainda sem conexão com o banco: continua na cópia local.
+      }
+    }
+  }
+  const resultado = await fila.sincronizar();
+  if (resultado.enviadas > 0 && !modoCopia) {
+    try {
+      await refreshAll();
+    } catch (error) {
+      // Os dados serão recarregados na próxima tentativa.
+    }
+  }
+  renderOfflineBar(resultado.parou);
+}
+
+function renderOfflineBar(parou) {
+  const bar = document.getElementById("offline-bar");
+  if (!bar) return;
+  const semSinal = !navigator.onLine;
+  const pendentes = fila.pendentes();
+  const erros = fila.comErro();
+  if (!semSinal && !modoCopia && pendentes === 0 && erros.length === 0) {
+    bar.hidden = true;
+    return;
+  }
+  const partes = [];
+  if (semSinal) {
+    partes.push(`<p><strong>Sem internet.</strong> Pode continuar vendendo: as vendas ficam guardadas neste aparelho e são enviadas quando o sinal voltar.${modoCopia ? " Os dados mostrados são da última vez que o sistema abriu com internet." : ""}</p>`);
+  }
+  if (pendentes > 0) {
+    partes.push(`<p>${pendentes} venda(s) aguardando envio${semSinal ? "" : "…"}</p>`);
+  }
+  if (!semSinal && (parou === "login" || (modoCopia && pendentes + erros.length > 0))) {
+    partes.push('<p>A internet voltou, mas é preciso entrar de novo para enviar. <button type="button" class="link-btn" data-fila="entrar">Entrar</button></p>');
+  }
+  erros.forEach((item) => {
+    const c = calcularVendaPendente(item.params);
+    partes.push(`<p class="offline-erro">A venda de ${formatDate(item.params.p_data)} (${brl.format(c.total)}) não foi aceita: ${escapeHtml(item.erro)}
+      <button type="button" class="link-btn" data-fila="retry" data-id="${item.id}">Tentar de novo</button>
+      <button type="button" class="link-btn" data-fila="drop" data-id="${item.id}">Descartar</button></p>`);
+  });
+  bar.innerHTML = partes.join("");
+  bar.hidden = false;
+}
+
+function initOffline() {
+  const bar = document.getElementById("offline-bar");
+  if (bar) {
+    bar.addEventListener("click", async (event) => {
+      const { fila: acao, id } = event.target.dataset;
+      if (!acao) return;
+      if (acao === "entrar") {
+        window.location.reload();
+      } else if (acao === "drop") {
+        if (!window.confirm("Descartar esta venda? Ela não será registrada no sistema.")) return;
+        fila.descartar(id);
+        await refreshFromCacheOrDb();
+      } else if (acao === "retry") {
+        fila.tentarDeNovo(id);
+        await sincronizarVendas();
+      }
+    });
+  }
+  fila.aoMudar(() => renderOfflineBar());
+  window.addEventListener("online", sincronizarVendas);
+  window.addEventListener("offline", () => renderOfflineBar());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) sincronizarVendas();
+  });
+  setInterval(sincronizarVendas, 20000);
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+// Recarrega a tela depois de mexer na fila: do banco, ou da cópia local se estiver sem conexão.
+async function refreshFromCacheOrDb() {
+  try {
+    await refreshAll();
+  } catch (error) {
+    if (carregarCopiaLocal()) renderers.forEach((render) => render());
+  }
+  renderOfflineBar();
+}
+
+function carregarCopiaLocal() {
+  const copia = lerCopiaLocal();
+  if (!copia) return false;
+  Object.keys(cache).forEach((chave) => {
+    cache[chave] = copia[chave] || [];
+  });
+  aplicarPendentes();
+  modoCopia = true;
+  return true;
 }
 
 function friendlyError(error) {
@@ -1865,7 +2037,9 @@ function initVendas() {
         const cliente = cache.clientes.find((c) => c.id === v.clienteId);
         const pecas = v.itens.reduce((sum, i) => sum + i.quantidade, 0);
         const lucro = v.itens.reduce((sum, i) => sum + i.quantidade * (i.preco - i.custo), 0) - (v.taxaPagaPor === "loja" ? v.valorTaxa : 0);
-        const action = v.estornada
+        const action = v.pendente
+          ? '<span class="muted small">Aguardando envio</span>'
+          : v.estornada
           ? '<span class="muted small">Desfeita</span>'
           : `<button class="link-btn" data-recibo="${v.id}" type="button">Recibo</button>
              <button class="link-btn" data-imprimir="${v.id}" type="button">Imprimir</button>
@@ -1977,7 +2151,8 @@ function initVendas() {
       return;
     }
     message.textContent = "Registrando...";
-    const { error } = await db.rpc("registrar_venda", {
+    // O id nasce no aparelho: se a venda for reenviada, o banco reconhece e não duplica.
+    const params = {
       p_data: dataIso,
       p_cliente_id: clienteSelect.value || null,
       p_forma: form.elements.forma.value,
@@ -1987,7 +2162,43 @@ function initVendas() {
       p_desconto: desconto,
       p_taxa: feePct(),
       p_taxa_paga_por: form.elements.taxaPaga.value,
-    });
+      p_id: window.crypto && crypto.randomUUID ? crypto.randomUUID() : null,
+    };
+    let error = null;
+    if (!navigator.onLine || modoCopia) {
+      error = { message: "sem conexao" };
+    } else {
+      try {
+        ({ error } = await db.rpc("registrar_venda", params));
+      } catch (falha) {
+        error = { message: String((falha && falha.message) || falha) };
+      }
+    }
+    if (error && params.p_id && (!navigator.onLine || modoCopia || ehErroDeRede(error))) {
+      // Sem sinal: confere o estoque que o aparelho conhece e guarda a venda na fila.
+      const faltando = [...new Set(itens.map((i) => i.estoque_id))].find((id) => {
+        const pedido = itens.filter((i) => i.estoque_id === id).reduce((sum, i) => sum + i.quantidade, 0);
+        const peca = cache.estoque.find((p) => p.id === id);
+        return !peca || peca.quantidade < pedido;
+      });
+      if (faltando) {
+        const peca = cache.estoque.find((p) => p.id === faltando);
+        message.textContent = `Estoque insuficiente${peca ? ` de ${peca.nome}: restam ${peca.quantidade} unidade(s)` : ""}.`;
+        return;
+      }
+      fila.adicionar({ id: params.p_id, params, criadoEm: new Date().toISOString(), erro: null });
+      aplicarPendentes();
+      message.textContent = "Sem internet: venda guardada neste aparelho. Será enviada quando o sinal voltar.";
+      form.elements.obs.value = "";
+      form.elements.desconto.value = "";
+      form.elements.taxa.value = "";
+      parcelasSelect.value = "1";
+      itemsBox.innerHTML = "";
+      renderers.forEach((render) => render());
+      renderOfflineBar();
+      sincronizarVendas();
+      return;
+    }
     if (error) {
       message.textContent = `Não foi possível registrar a venda. ${error.message}`;
       return;
@@ -2877,10 +3088,18 @@ async function startApp() {
   setLoggedIn(true);
   try {
     await refreshAll();
+    modoCopia = false;
+    marcarLogado(true);
   } catch (error) {
-    document.getElementById("login-message").textContent = `Não consegui carregar os dados. ${error.message || ""}`;
-    setLoggedIn(false);
+    if (estavaLogado() && carregarCopiaLocal()) {
+      renderers.forEach((render) => render());
+    } else {
+      document.getElementById("login-message").textContent = `Não consegui carregar os dados. ${error.message || ""}`;
+      setLoggedIn(false);
+    }
   }
+  renderOfflineBar();
+  sincronizarVendas();
 }
 
 function initAuth() {
@@ -2910,12 +3129,20 @@ function initAuth() {
   });
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
-    await db.auth.signOut();
+    const guardadas = fila.itens().length;
+    if (guardadas > 0 && !window.confirm(`Há ${guardadas} venda(s) guardada(s) que ainda não foram enviadas. Elas continuam guardadas, mas só serão enviadas depois que você entrar de novo. Sair mesmo assim?`)) return;
+    marcarLogado(false);
+    try {
+      await db.auth.signOut();
+    } catch (error) {
+      // Sem internet: a sessão local é limpa mesmo assim ao recarregar.
+    }
     window.location.reload();
   });
 
   db.auth.getSession().then(({ data }) => {
     if (data.session) startApp();
+    else if (!navigator.onLine && estavaLogado() && lerCopiaLocal()) startApp();
   });
 }
 
@@ -2929,4 +3156,5 @@ initVendas();
 initFinance();
 initPainel();
 initRelatorios();
+initOffline();
 initAuth();
