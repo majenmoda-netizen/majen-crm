@@ -1,6 +1,6 @@
 // Guarda o sistema no aparelho para abrir mesmo sem internet. Os dados do banco nunca vem do cache.
-const CACHE = "majen-v26";
-const SHELL = ["./", "index.html", "styles.css?v=26", "config.js?v=26", "offline.js?v=26", "app.js?v=26", "manifest.webmanifest", "icon.svg"];
+const CACHE = "majen-v27";
+const SHELL = ["./", "index.html", "styles.css?v=27", "config.js?v=27", "offline.js?v=27", "app.js?v=27", "manifest.webmanifest", "icon.svg"];
 const CDN = ["cdn.jsdelivr.net", "cdnjs.cloudflare.com"];
 
 self.addEventListener("install", (event) => {

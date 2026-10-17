@@ -152,6 +152,9 @@ const tripFromRow = (r) => ({
   fornecedorIds: [],
 });
 
+const CATEGORIAS_ESTOQUE = { roupas: "Roupas", perfumaria: "Perfumaria", chocolate: "Chocolate", outros: "Outros" };
+const categoriaEstoque = (c) => CATEGORIAS_ESTOQUE[c] || c;
+
 const stockFromRow = (r) => ({
   id: r.id,
   nome: r.nome,
@@ -1045,7 +1048,7 @@ function initStock() {
           <td>${escapeHtml(item.codigo || "—")}</td>
           <td>${escapeHtml(item.nome)}</td>
           <td>${escapeHtml(fornecedorDe(item) || "—")}</td>
-          <td>${item.categoria}</td>
+          <td>${escapeHtml(categoriaEstoque(item.categoria))}</td>
           <td>${escapeHtml(item.tamanho || "—")}</td>
           <td>${escapeHtml(item.cor || "—")}</td>
           <td>
@@ -2445,7 +2448,7 @@ const EXPORTS = {
       "estoque",
       ["Código", "Nome", "Fornecedor", "Categoria", "Tamanho", "Cor", "Quantidade", "Custo do produto", "Custo de transporte", "Custo total", "Preço de venda", "Lucro por peça", "Lucro sobre o custo (%)"],
       cache.estoque.map((p) => [
-        p.codigo, p.nome, fornecedorDe(p), p.categoria, p.tamanho, p.cor, p.quantidade,
+        p.codigo, p.nome, fornecedorDe(p), categoriaEstoque(p.categoria), p.tamanho, p.cor, p.quantidade,
         csvNumber(p.custoProduto), csvNumber(p.custoTransporte), csvNumber(p.custoTotal), csvNumber(p.precoVenda),
         csvNumber(round2(p.precoVenda - p.custoTotal)), p.custoTotal > 0 ? csvNumber(round2(((p.precoVenda - p.custoTotal) / p.custoTotal) * 100)) : "",
       ])
