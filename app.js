@@ -3425,14 +3425,11 @@ function initAuth() {
 
 window.addEventListener("hashchange", showRoute);
 showRoute();
-initTrips();
-initStock();
-initClients();
-initVitrine();
-initFornecedores();
-initVendas();
-initFinance();
-initPainel();
-initRelatorios();
-initOffline();
-initAuth();
+// Cada tela é iniciada separada: se uma falhar, o resto (principalmente o login) continua funcionando.
+[initTrips, initStock, initClients, initVitrine, initFornecedores, initVendas, initFinance, initPainel, initRelatorios, initOffline, initAuth].forEach((iniciar) => {
+  try {
+    iniciar();
+  } catch (error) {
+    console.error(`Falha ao iniciar ${iniciar.name}`, error);
+  }
+});
