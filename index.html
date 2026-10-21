@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#875765">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=27">
+  <link rel="stylesheet" href="styles.css?v=28">
 </head>
 <body>
   <section id="login" class="login">
@@ -34,6 +34,7 @@
         <a href="#painel" data-route="painel">Painel</a>
         <a href="#viagens" data-route="viagens">Viagens</a>
         <a href="#estoque" data-route="estoque">Estoque</a>
+        <a href="#vitrine" data-route="vitrine">Vitrine</a>
         <a href="#fornecedores" data-route="fornecedores">Fornecedores</a>
         <a href="#vendas" data-route="vendas">Vendas</a>
         <a href="#clientes" data-route="clientes">Clientes</a>
@@ -213,6 +214,54 @@
             </div>
           </form>
 
+          <form id="stock-edit-form" class="card" novalidate hidden>
+            <h2>Editar peça</h2>
+            <input type="hidden" name="id">
+            <label>Trocar foto (opcional)
+              <input type="file" name="foto" accept="image/*">
+            </label>
+            <div id="stock-edit-photo" class="photo-preview"></div>
+            <div class="row">
+              <label>Código
+                <input type="text" name="codigo">
+              </label>
+              <label>Fornecedor
+                <select name="fornecedorId"></select>
+              </label>
+            </div>
+            <label>Nome
+              <input type="text" name="nome" required>
+            </label>
+            <div class="row">
+              <label>Categoria
+                <select name="categoria">
+                  <option value="roupas">Roupas</option>
+                  <option value="perfumaria">Perfumaria</option>
+                  <option value="chocolate">Chocolate</option>
+                  <option value="outros">Outros</option>
+                </select>
+              </label>
+              <label>Tamanho
+                <input type="text" name="tamanho">
+              </label>
+            </div>
+            <div class="row">
+              <label>Cor
+                <input type="text" name="cor">
+              </label>
+              <label>Preço de venda (R$)
+                <input type="number" name="precoVenda" min="0" step="0.01" required>
+              </label>
+            </div>
+            <p id="stock-edit-info" class="muted small"></p>
+            <p class="muted small">Quantidade e custo não mudam aqui, porque mexem no caixa. Para a quantidade use o + e o − na lista.</p>
+            <div class="actions">
+              <button type="submit" class="btn">Salvar alterações</button>
+              <button type="button" class="link-btn" id="stock-edit-cancel">Cancelar</button>
+              <span id="stock-edit-message" class="muted"></span>
+            </div>
+          </form>
+
           <div class="card">
             <h2>Peças em estoque</h2>
             <div id="stock-summary" class="kpis"></div>
@@ -224,13 +273,28 @@
         </div>
       </section>
 
+      <section class="screen" data-screen="vitrine">
+        <div class="vitrine-head">
+          <div>
+            <h1>Vitrine</h1>
+            <p class="muted">Peças disponíveis, só com o preço de venda. Bom para mostrar à cliente.</p>
+          </div>
+          <button type="button" class="btn secondary" id="vitrine-modo">Mostrar para a cliente</button>
+        </div>
+        <div class="vitrine-filtros">
+          <input type="search" id="vitrine-search" placeholder="Buscar por nome, código, tamanho ou cor">
+          <div id="vitrine-categorias" class="pills"></div>
+        </div>
+        <div id="vitrine-grid" class="vitrine-grid"></div>
+      </section>
+
       <section class="screen" data-screen="clientes">
         <h1>Clientes</h1>
         <p class="muted">Cadastro com WhatsApp como chave, consentimento, aniversário e total gasto.</p>
 
         <div class="grid">
           <form id="client-form" class="card" novalidate>
-            <h2>Novo cliente</h2>
+            <h2 id="client-form-title">Novo cliente</h2>
 
             <label>Nome
               <input type="text" name="nome" required>
@@ -284,7 +348,8 @@
             </label>
 
             <div class="actions">
-              <button type="submit" class="btn">Salvar cliente</button>
+              <button type="submit" class="btn" id="client-submit">Salvar cliente</button>
+              <button type="button" class="link-btn" id="client-cancel" hidden>Cancelar edição</button>
               <span id="client-message" class="muted"></span>
             </div>
           </form>
@@ -387,6 +452,11 @@
               <select name="parcelas"></select>
             </label>
 
+            <label id="sale-prazo-label" hidden>Pagar em quantos dias após a compra
+              <input type="number" name="prazoDias" min="1" max="365" step="1" placeholder="Ex.: 15">
+              <span id="sale-prazo-info" class="muted small"></span>
+            </label>
+
             <div id="sale-fee-box" class="row" hidden>
               <label>Taxa da maquininha (%)
                 <input type="number" name="taxa" min="0" max="49.9" step="0.01" placeholder="Ex.: 3,5">
@@ -431,6 +501,7 @@
 
           <div class="card">
             <h2>Vendas registradas</h2>
+            <div id="sale-receivable"></div>
             <div id="sale-list" class="table-wrap">
               <p class="muted">Nenhuma venda registrada ainda.</p>
             </div>
@@ -552,8 +623,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
-  <script src="config.js?v=27"></script>
-  <script src="offline.js?v=27"></script>
-  <script src="app.js?v=27"></script>
+  <script src="config.js?v=28"></script>
+  <script src="offline.js?v=28"></script>
+  <script src="app.js?v=28"></script>
+  <button type="button" class="vitrine-sair" id="vitrine-sair" hidden>Sair do modo cliente</button>
 </body>
 </html>

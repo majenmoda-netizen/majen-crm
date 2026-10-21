@@ -1,9 +1,10 @@
 // Navegação simples entre as telas, usando o hash da URL (#viagens, #estoque...).
-const ROUTES = ["painel", "viagens", "estoque", "fornecedores", "vendas", "clientes", "financeiro", "relatorios"];
+const ROUTES = ["painel", "viagens", "estoque", "fornecedores", "vitrine", "vendas", "clientes", "financeiro", "relatorios"];
 
 function showRoute() {
   const hash = window.location.hash.replace("#", "");
-  const route = ROUTES.includes(hash) ? hash : "painel";
+  // No modo cliente a tela fica travada na vitrine.
+  const route = document.body.classList.contains("modo-cliente") ? "vitrine" : ROUTES.includes(hash) ? hash : "painel";
 
   document.querySelectorAll(".screen").forEach((screen) => {
     screen.classList.toggle("active", screen.dataset.screen === route);
@@ -50,6 +51,13 @@ function formatDate(iso) {
   return `${d}/${m}/${y}`;
 }
 
+// Soma dias a uma data AAAA-MM-DD (usado no vencimento das vendas a prazo).
+function addDaysISO(iso, dias) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d + dias);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -58,6 +66,7 @@ function escapeHtml(value) {
 const formaVenda = (v) => {
   const partes = [];
   if (v.parcelas > 1) partes.push(`${v.parcelas}x`);
+  if (v.prazoDias) partes.push(`${v.prazoDias} dias`);
   if (v.taxa > 0) partes.push(`taxa ${pct(v.taxa)}`);
   return partes.length ? `${v.forma} (${partes.join(", ")})` : v.forma;
 };
@@ -232,6 +241,9 @@ const vendaFromRow = (r) => ({
   totalCobrado: num(r.total_cobrado || r.total),
   numero: r.numero ?? null,
   obs: r.obs || "",
+  prazoDias: r.prazo_dias || null,
+  vencimento: r.vencimento || null,
+  recebidaEm: r.recebida_em || null,
   estornada: !!r.estornada_em,
   itens: (r.itens_venda || []).map((i) => ({
     estoqueId: i.estoque_id,
@@ -338,6 +350,9 @@ function aplicarPendentes() {
       totalCobrado: round2(c.cobrado),
       numero: null,
       obs: p.p_obs || "",
+      prazoDias: p.p_prazo_dias || null,
+      vencimento: p.p_prazo_dias ? addDaysISO(p.p_data, p.p_prazo_dias) : null,
+      recebidaEm: null,
       estornada: false,
       pendente: true,
       itens: p.p_itens.map((i) => {
@@ -928,6 +943,92 @@ function initStock() {
   let photoData = "";
   let editedBy = null; // "margem" ou "preco": qual dos dois você mexeu por último
 
+  // Edição de uma peça já cadastrada: nome, código, categoria, tamanho, cor, fornecedor, foto e preço de venda.
+  // Quantidade e custo ficam de fora porque mexem no caixa (use o + e o − da lista).
+  const editForm = document.getElementById("stock-edit-form");
+  const editMessage = document.getElementById("stock-edit-message");
+  const editPhoto = document.getElementById("stock-edit-photo");
+  const editInfo = document.getElementById("stock-edit-info");
+  let editPhotoData = null; // null = mantém a foto atual
+
+  function openEdit(id) {
+    const p = cache.estoque.find((x) => x.id === id);
+    if (!p) return;
+    editForm.elements.id.value = p.id;
+    editForm.elements.nome.value = p.nome;
+    editForm.elements.codigo.value = p.codigo;
+    editForm.elements.categoria.value = p.categoria;
+    editForm.elements.tamanho.value = p.tamanho;
+    editForm.elements.cor.value = p.cor;
+    editForm.elements.precoVenda.value = p.precoVenda;
+    editForm.elements.foto.value = "";
+    editForm.elements.fornecedorId.innerHTML = `<option value="">Sem fornecedor</option>${cache.fornecedores
+      .map((f) => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`)
+      .join("")}`;
+    editForm.elements.fornecedorId.value = p.fornecedorId || "";
+    editPhotoData = null;
+    editPhoto.innerHTML = p.foto ? `<img class="thumb large" src="${p.foto}" alt="Foto atual">` : "";
+    editMessage.textContent = "";
+    renderEditInfo();
+    editForm.hidden = false;
+    editForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderEditInfo() {
+    const p = cache.estoque.find((x) => x.id === editForm.elements.id.value);
+    const preco = num(editForm.elements.precoVenda.value);
+    if (!p || !(preco >= 0)) {
+      editInfo.textContent = "";
+      return;
+    }
+    const lucro = preco - p.custoTotal;
+    editInfo.textContent = `Custo total ${brl.format(p.custoTotal)} · lucro por peça ${brl.format(lucro)}${p.custoTotal > 0 ? ` (${pct((lucro / p.custoTotal) * 100)} sobre o custo)` : ""}`;
+  }
+
+  editForm.elements.precoVenda.addEventListener("input", renderEditInfo);
+  editForm.elements.foto.addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      editPhotoData = await compressPhoto(file);
+      editPhoto.innerHTML = `<img class="thumb large" src="${editPhotoData}" alt="Nova foto">`;
+    } catch (error) {
+      editMessage.textContent = "Não consegui ler esta foto. Tente outra.";
+    }
+  });
+  document.getElementById("stock-edit-cancel").addEventListener("click", () => {
+    editForm.hidden = true;
+  });
+  editForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const id = editForm.elements.id.value;
+    const nome = editForm.elements.nome.value.trim();
+    const precoVenda = num(editForm.elements.precoVenda.value);
+    if (!nome || editForm.elements.precoVenda.value === "" || !(precoVenda >= 0)) {
+      editMessage.textContent = "Confira o nome e o preço de venda.";
+      return;
+    }
+    editMessage.textContent = "Salvando...";
+    const dados = {
+      nome,
+      categoria: editForm.elements.categoria.value,
+      codigo: editForm.elements.codigo.value.trim() || null,
+      tamanho: editForm.elements.tamanho.value.trim() || null,
+      cor: editForm.elements.cor.value.trim() || null,
+      fornecedor_id: editForm.elements.fornecedorId.value || null,
+      preco_venda: round2(precoVenda),
+    };
+    if (editPhotoData !== null) dados.foto = editPhotoData;
+    const { error } = await db.from("estoque").update(dados).eq("id", id);
+    if (error) {
+      editMessage.textContent = friendlyError(error);
+      return;
+    }
+    editForm.hidden = true;
+    message.textContent = `Peça "${nome}" atualizada.`;
+    await refreshAll();
+  });
+
   function fillTrips() {
     const previous = tripSelect.value;
     const options = cache.viagens
@@ -1059,7 +1160,7 @@ function initStock() {
           <td>${brl.format(item.custoTotal)}</td>
           <td><strong>${brl.format(item.precoVenda)}</strong></td>
           <td class="${lucro < 0 ? "tag-out" : "tag-in"}"><strong>${brl.format(lucro)}</strong><br><span class="small">${pct(lucroPct)}</span></td>
-          <td><button class="link-btn" data-remove="${item.id}" type="button">Remover</button></td>
+          <td><button class="link-btn" data-editar="${item.id}" type="button">Editar</button> <button class="link-btn" data-remove="${item.id}" type="button">Remover</button></td>
         </tr>`;
       })
       .join("");
@@ -1166,7 +1267,11 @@ function initStock() {
   }
 
   list.addEventListener("click", async (event) => {
-    const { repor, baixa, remove } = event.target.dataset;
+    const { repor, baixa, remove, editar } = event.target.dataset;
+    if (editar) {
+      openEdit(editar);
+      return;
+    }
     if (repor) {
       const item = cache.estoque.find((i) => i.id === repor);
       if (!item) return;
@@ -1214,6 +1319,71 @@ function initStock() {
   renderers.push(renderPreview);
 }
 
+// ---------- Vitrine ----------
+
+// Peças disponíveis só com o preço de venda (sem custo, lucro nem quantidade), para consulta e para mostrar à cliente.
+function initVitrine() {
+  const grid = document.getElementById("vitrine-grid");
+  if (!grid) return;
+
+  const search = document.getElementById("vitrine-search");
+  const catBox = document.getElementById("vitrine-categorias");
+  const modoBtn = document.getElementById("vitrine-modo");
+  const sairBtn = document.getElementById("vitrine-sair");
+  let categoria = "todas";
+
+  function render() {
+    const disponiveis = cache.estoque.filter((p) => p.quantidade > 0);
+    const presentes = Object.keys(CATEGORIAS_ESTOQUE).filter((c) => disponiveis.some((p) => p.categoria === c));
+    if (categoria !== "todas" && !presentes.includes(categoria)) categoria = "todas";
+    catBox.innerHTML = ["todas", ...presentes]
+      .map((c) => `<button type="button" class="pill ${c === categoria ? "on" : ""}" data-cat="${c}">${c === "todas" ? "Todas" : categoriaEstoque(c)}</button>`)
+      .join("");
+
+    const term = search.value.trim().toLowerCase();
+    const itens = disponiveis
+      .filter((p) => categoria === "todas" || p.categoria === categoria)
+      .filter((p) => !term || [p.nome, p.codigo, p.tamanho, p.cor].some((f) => (f || "").toLowerCase().includes(term)))
+      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+    grid.innerHTML = itens.length
+      ? itens
+          .map(
+            (p) => `
+        <div class="vitrine-card">
+          <div class="vitrine-foto">${p.foto ? `<img src="${p.foto}" alt="${escapeHtml(p.nome)}" loading="lazy">` : "<span>sem foto</span>"}</div>
+          <div class="vitrine-info">
+            <div class="vitrine-nome">${escapeHtml(p.nome)}</div>
+            <div class="muted small">${escapeHtml([p.codigo, p.tamanho, p.cor].filter(Boolean).join(" · "))}</div>
+            <div class="vitrine-preco">${brl.format(p.precoVenda)}</div>
+          </div>
+        </div>`
+          )
+          .join("")
+      : `<p class="muted">${term || categoria !== "todas" ? "Nenhuma peça encontrada." : "Nenhuma peça disponível no estoque."}</p>`;
+  }
+
+  search.addEventListener("input", render);
+  catBox.addEventListener("click", (event) => {
+    if (!event.target.dataset.cat) return;
+    categoria = event.target.dataset.cat;
+    render();
+  });
+  // Modo cliente: esconde o menu e trava na vitrine. É só uma comodidade, não uma proteção.
+  modoBtn.addEventListener("click", () => {
+    document.body.classList.add("modo-cliente");
+    sairBtn.hidden = false;
+    window.location.hash = "#vitrine";
+    showRoute();
+  });
+  sairBtn.addEventListener("click", () => {
+    document.body.classList.remove("modo-cliente");
+    sairBtn.hidden = true;
+    showRoute();
+  });
+
+  renderers.push(render);
+}
+
 // ---------- Clientes ----------
 
 function initClients() {
@@ -1226,7 +1396,35 @@ function initClients() {
   const search = document.getElementById("client-search");
   const birthdays = document.getElementById("client-birthdays");
   const detail = document.getElementById("client-detail");
+  const formTitle = document.getElementById("client-form-title");
+  const submitButton = document.getElementById("client-submit");
+  const cancelButton = document.getElementById("client-cancel");
   let selectedId = null;
+  let editingId = null;
+
+  // Carrega a cliente no formulário para editar (ou limpa o formulário, voltando a "Novo cliente").
+  function setEditing(id) {
+    editingId = id;
+    const c = cache.clientes.find((x) => x.id === id);
+    formTitle.textContent = c ? "Editar cliente" : "Novo cliente";
+    submitButton.textContent = c ? "Salvar alterações" : "Salvar cliente";
+    cancelButton.hidden = !c;
+    if (!c) {
+      form.reset();
+      return;
+    }
+    form.elements.nome.value = c.nome;
+    form.elements.whatsapp.value = c.whatsapp;
+    form.elements.aniversario.value = c.aniversario ? formatDate(c.aniversario) : "";
+    form.elements.origem.value = c.origem;
+    form.elements.indicadaPor.value = c.indicadaPor;
+    form.elements.tamanho.value = c.tamanho;
+    form.elements.perfume.value = c.perfume;
+    form.elements.estilo.value = c.estilo;
+    form.elements.consentWhats.checked = c.consentWhats;
+    form.elements.consentPromo.checked = c.consentPromo;
+    form.elements.obs.value = c.obs;
+  }
 
   function renderBirthdays(clients) {
     const month = new Date().getMonth() + 1;
@@ -1297,7 +1495,10 @@ function initClients() {
     detail.innerHTML = `
       <div class="detail-head">
         <h2>${escapeHtml(client.nome)}</h2>
-        <button class="link-btn" data-close="1" type="button">Fechar</button>
+        <div>
+          <button class="link-btn" data-edit="1" type="button">Editar cadastro</button>
+          <button class="link-btn" data-close="1" type="button">Fechar</button>
+        </div>
       </div>
       <p class="muted small">
         WhatsApp ${escapeHtml(client.whatsapp)} · Aniversário ${formatDate(client.aniversario)} ·
@@ -1359,7 +1560,7 @@ function initClients() {
       message.textContent = "Informe nome e WhatsApp com DDD.";
       return;
     }
-    const existing = cache.clientes.find((c) => c.whatsapp === whatsapp);
+    const existing = cache.clientes.find((c) => c.whatsapp === whatsapp && c.id !== editingId);
     if (existing) {
       message.textContent = `Já existe cliente com esse WhatsApp: ${existing.nome}.`;
       selectedId = existing.id;
@@ -1373,7 +1574,7 @@ function initClients() {
     }
     const consentWhats = form.elements.consentWhats.checked;
     const consentPromo = form.elements.consentPromo.checked;
-    const { error } = await db.from("clientes").insert({
+    const dados = {
       nome,
       whatsapp,
       aniversario: aniversarioIso,
@@ -1383,18 +1584,28 @@ function initClients() {
       perfume: form.elements.perfume.value.trim() || null,
       estilo: form.elements.estilo.value.trim() || null,
       consent_whats: consentWhats,
-      consent_whats_em: consentWhats ? todayISO() : null,
       consent_promo: consentPromo,
-      consent_promo_em: consentPromo ? todayISO() : null,
       obs: form.elements.obs.value.trim() || null,
-    });
+    };
+    // A data do consentimento só muda quando o consentimento muda (ao editar, mantém a data original).
+    const atual = editingId ? cache.clientes.find((c) => c.id === editingId) : null;
+    if (!atual || consentWhats !== atual.consentWhats) dados.consent_whats_em = consentWhats ? todayISO() : null;
+    if (!atual || consentPromo !== atual.consentPromo) dados.consent_promo_em = consentPromo ? todayISO() : null;
+
+    const { error } = editingId
+      ? await db.from("clientes").update(dados).eq("id", editingId)
+      : await db.from("clientes").insert(dados);
     if (error) {
       message.textContent = friendlyError(error);
       return;
     }
-    message.textContent = "Cliente salvo.";
-    form.reset();
+    message.textContent = editingId ? "Cadastro atualizado." : "Cliente salvo.";
+    setEditing(null);
     await refreshAll();
+  });
+  cancelButton.addEventListener("click", () => {
+    setEditing(null);
+    message.textContent = "";
   });
 
   search.addEventListener("input", renderList);
@@ -1408,6 +1619,12 @@ function initClients() {
   });
 
   detail.addEventListener("click", (event) => {
+    if (event.target.dataset.edit && selectedId) {
+      setEditing(selectedId);
+      message.textContent = "";
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     if (event.target.dataset.close) {
       selectedId = null;
       renderDetail();
@@ -1865,7 +2082,9 @@ function buildReceipt(v) {
   doc.text("Pagamento", M + 10, y + 16);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...INK);
-  const pagamento = v.parcelas > 1 ? `${v.forma} · ${v.parcelas}x de ${moneyText(round2(cobrado / v.parcelas))}` : v.forma || "Não informado";
+  const pagamento = v.prazoDias
+    ? `A prazo · vence em ${formatDate(v.vencimento)}`
+    : v.parcelas > 1 ? `${v.forma} · ${v.parcelas}x de ${moneyText(round2(cobrado / v.parcelas))}` : v.forma || "Não informado";
   doc.text(pagamento, W - M - 10, y + 16, { align: "right" });
   y += 42;
 
@@ -1920,6 +2139,18 @@ function initVendas() {
   const parcelasLabel = document.getElementById("sale-parcelas-label");
   const parcelasSelect = form.elements.parcelas;
   const isCredit = () => form.elements.forma.value === "Cartão de crédito";
+  const isPrazo = () => form.elements.forma.value === "A prazo";
+  const prazoLabel = document.getElementById("sale-prazo-label");
+  const prazoInfo = document.getElementById("sale-prazo-info");
+  const receivableBox = document.getElementById("sale-receivable");
+
+  // Venda a prazo: mostra o campo de dias e já calcula a data de vencimento.
+  function renderPrazo() {
+    prazoLabel.hidden = !isPrazo();
+    const dias = Number(form.elements.prazoDias.value);
+    const dataIso = parseDateBR(form.elements.data.value);
+    prazoInfo.textContent = isPrazo() && Number.isInteger(dias) && dias >= 1 && dataIso ? `Vence em ${formatDate(addDaysISO(dataIso, dias))}` : "";
+  }
 
   // Opções de 1x a 12x, já mostrando o valor de cada parcela. Só aparece no cartão de crédito.
   function renderParcelas(total) {
@@ -1995,6 +2226,7 @@ function initVendas() {
     const cobrado = quem === "cliente" ? total + valorTaxa : total;
 
     // O valor grande é o que passa no cartão. Com taxa paga pelo cliente, ele já inclui o acréscimo.
+    renderPrazo();
     totalLabel.textContent = taxa > 0 && quem === "cliente" ? "Total a cobrar no cartão" : "Total da venda";
     totalEl.textContent = brl.format(cobrado);
     renderParcelas(cobrado);
@@ -2015,6 +2247,14 @@ function initVendas() {
       ${lucro < 0 ? '<p class="warn small">Atenção: esta venda está abaixo do custo e dá prejuízo.</p>' : ""}`;
   }
 
+  // Situação da venda a prazo na coluna de pagamento.
+  function prazoStatus(v) {
+    if (!v.prazoDias || v.estornada) return "";
+    if (v.recebidaEm) return `<br><span class="small tag-in">recebida em ${formatDate(v.recebidaEm)}</span>`;
+    const vencida = v.vencimento < todayISO();
+    return `<br><span class="small ${vencida ? "tag-out" : "muted"}">${vencida ? "venceu em" : "vence em"} ${formatDate(v.vencimento)}</span>`;
+  }
+
   function renderVendas() {
     const currentCliente = clienteSelect.value;
     const clientes = cache.clientes
@@ -2031,6 +2271,14 @@ function initVendas() {
     });
     renderTotal();
 
+    // Vendas a prazo ainda não recebidas.
+    const hoje = todayISO();
+    const aReceber = cache.vendas.filter((v) => v.prazoDias && !v.recebidaEm && !v.estornada);
+    const vencidas = aReceber.filter((v) => v.vencimento < hoje);
+    receivableBox.innerHTML = aReceber.length
+      ? `<p class="receivable"><strong>A receber: ${brl.format(aReceber.reduce((sum, v) => sum + v.total, 0))}</strong> em ${aReceber.length} venda(s)${vencidas.length ? ` · <span class="tag-out">${vencidas.length} vencida(s)</span>` : ""}</p>`
+      : "";
+
     if (cache.vendas.length === 0) {
       list.innerHTML = '<p class="muted">Nenhuma venda registrada ainda.</p>';
       return;
@@ -2044,14 +2292,15 @@ function initVendas() {
           ? '<span class="muted small">Aguardando envio</span>'
           : v.estornada
           ? '<span class="muted small">Desfeita</span>'
-          : `<button class="link-btn" data-recibo="${v.id}" type="button">Recibo</button>
+          : `${v.prazoDias && !v.recebidaEm ? `<button class="link-btn" data-receber="${v.id}" type="button">Receber</button>` : ""}
+             <button class="link-btn" data-recibo="${v.id}" type="button">Recibo</button>
              <button class="link-btn" data-imprimir="${v.id}" type="button">Imprimir</button>
              <button class="link-btn" data-estornar="${v.id}" type="button">Desfazer</button>`;
         return `
           <tr class="${v.estornada ? "undone" : ""}">
             <td>${formatDate(v.data)}</td>
             <td>${cliente ? escapeHtml(cliente.nome) : "—"}</td>
-            <td>${escapeHtml(formaVenda(v) || "—")}</td>
+            <td>${escapeHtml(formaVenda(v) || "—")}${prazoStatus(v)}</td>
             <td>${pecas} peça(s)</td>
             <td>${v.desconto > 0 ? pct(v.desconto) : "—"}</td>
             <td><strong>${brl.format(v.total)}</strong>${v.taxaPagaPor === "cliente" && v.valorTaxa > 0 ? `<br><span class="muted small">cobrado ${brl.format(v.totalCobrado)}</span>` : ""}</td>
@@ -2089,6 +2338,21 @@ function initVendas() {
   });
 
   list.addEventListener("click", async (event) => {
+    const id = event.target.dataset.receber;
+    if (!id) return;
+    const venda = cache.vendas.find((x) => x.id === id);
+    if (!venda) return;
+    if (!window.confirm(`Marcar como recebida hoje? ${brl.format(venda.total)} entram no caixa.`)) return;
+    const { error } = await db.rpc("receber_venda", { p_venda_id: id, p_data: todayISO() });
+    if (error) {
+      message.textContent = `Não foi possível marcar como recebida. ${error.message}`;
+      return;
+    }
+    message.textContent = "Venda recebida e lançada no caixa.";
+    await refreshAll();
+  });
+
+  list.addEventListener("click", async (event) => {
     const id = event.target.dataset.estornar;
     if (!id) return;
     if (!window.confirm("Desfazer esta venda? As peças voltam ao estoque e o valor é estornado no caixa.")) return;
@@ -2120,6 +2384,8 @@ function initVendas() {
   form.elements.taxa.addEventListener("input", renderTotal);
   form.elements.taxaPaga.addEventListener("change", renderTotal);
   form.elements.forma.addEventListener("change", renderTotal);
+  form.elements.prazoDias.addEventListener("input", renderPrazo);
+  form.elements.data.addEventListener("input", renderPrazo);
 
   itemsBox.addEventListener("click", (event) => {
     if (event.target.dataset.field !== "remover") return;
@@ -2137,6 +2403,11 @@ function initVendas() {
     }
     if (itens.length === 0 || itens.some((i) => !i.estoque_id || !Number.isInteger(i.quantidade) || i.quantidade < 1 || !(i.preco >= 0))) {
       message.textContent = "Confira peça, quantidade (número inteiro) e preço de cada item.";
+      return;
+    }
+    const prazoDias = Number(form.elements.prazoDias.value);
+    if (isPrazo() && !(Number.isInteger(prazoDias) && prazoDias >= 1 && prazoDias <= 365)) {
+      message.textContent = "Informe em quantos dias após a compra a cliente vai pagar (de 1 a 365).";
       return;
     }
     const desconto = discountPct();
@@ -2166,6 +2437,7 @@ function initVendas() {
       p_taxa: feePct(),
       p_taxa_paga_por: form.elements.taxaPaga.value,
       p_id: window.crypto && crypto.randomUUID ? crypto.randomUUID() : null,
+      p_prazo_dias: isPrazo() ? prazoDias : null,
     };
     let error = null;
     if (!navigator.onLine || modoCopia) {
@@ -2195,6 +2467,7 @@ function initVendas() {
       form.elements.obs.value = "";
       form.elements.desconto.value = "";
       form.elements.taxa.value = "";
+      form.elements.prazoDias.value = "";
       parcelasSelect.value = "1";
       itemsBox.innerHTML = "";
       renderers.forEach((render) => render());
@@ -2206,10 +2479,11 @@ function initVendas() {
       message.textContent = `Não foi possível registrar a venda. ${error.message}`;
       return;
     }
-    message.textContent = "Venda registrada.";
+    message.textContent = isPrazo() ? "Venda a prazo registrada. O valor entra no caixa quando você marcar como recebida." : "Venda registrada.";
     form.elements.obs.value = "";
     form.elements.desconto.value = "";
     form.elements.taxa.value = "";
+    form.elements.prazoDias.value = "";
     parcelasSelect.value = "1";
     itemsBox.innerHTML = "";
     await refreshAll();
@@ -2220,7 +2494,7 @@ function initVendas() {
 
 // ---------- Financeiro ----------
 
-const FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito", "Transferência", "Outro"];
+const FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito", "A prazo", "Transferência", "Outro"];
 const CATEGORIAS = {
   // "Compra de peças" e "Transporte (viagem)" são lançados sozinhos ao cadastrar peças e viagens.
   saida: ["Energia", "Cápsulas", "Embalagens", "Marketing", "Aluguel", "Outras saídas"],
@@ -3154,6 +3428,7 @@ showRoute();
 initTrips();
 initStock();
 initClients();
+initVitrine();
 initFornecedores();
 initVendas();
 initFinance();
